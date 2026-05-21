@@ -16,9 +16,6 @@ class OrigamiDegree4Simulator:
        
         sum_alpha = np.sum(self.original_alphas)
         self.is_euclidean = np.isclose(sum_alpha, 2*np.pi)
-
-        a1, a2, a3, a4 = self.original_alphas
-        self.is_flat_foldable = self.is_euclidean and np.isclose(a1 + a3, np.pi, atol=1e-5)
         
         if self.is_euclidean:
             self.driving_crease = 4
@@ -36,7 +33,7 @@ class OrigamiDegree4Simulator:
         self.full_math_data = [] # total solution space (Faded lines)
         self.branch1 = []        # path 1 (M/V pattern 1)
         self.branch2 = []        # path 2 (M/V pattern 2)
-        
+    
         if self.verbose:
             print(f"[{self.geom_type}] Sum: {np.rad2deg(sum_alpha):.2f} deg / Driving Crease: e{self.driving_crease}")
         
@@ -149,11 +146,11 @@ class OrigamiDegree4Simulator:
     def get_mv_pattern(self, rhos):
         """Get rhos, change into M/V/F string (ex 'MVVV') for Euclidean case"""
         return "".join(["V" if r > 1e-4 else "M" if r < -1e-4 else "F" for r in rhos])
+
     
     # --- [Computation Methods] ---
     def run_simulation(self, resolution=1000):
         """Path calculation & find physical path"""
-        a1, a2, a3, a4 = self.alphas
         rho_drive_range = np.linspace(-np.pi + 1e-4, np.pi - 1e-4, resolution)
         step_size = (2 * np.pi) / resolution
         
@@ -242,6 +239,85 @@ class OrigamiDegree4Simulator:
         
         self.math_branch1 = np.array(raw_m1) if len(raw_m1) > 0 else [] # for 3d interactive
         self.math_branch2 = np.array(raw_m2) if len(raw_m2) > 0 else []
+
+    
+    def compute_folding_angles_from_input_output(self, input_angle_deg, output_index, sign = 1, verbose=False):
+        # input_angle_deg: single float or list[float]
+        # if sign +1: input/output angle same sign, -1: different sign 
+        
+        # Input index validation
+        if not isinstance(output_index, int) or output_index not in [0, 1, 2, 3]:
+            raise ValueError(f"output_index must be 0~3, got {output_index}")
+        if sign not in [1, -1]:
+            raise ValueError(f"sign must be 1 or -1, got {sign}")
+        if self.driving_crease - 1 == output_index:
+            raise ValueError("input_index와 output_index가 같을 수 없습니다")
+        
+        input_angles_rad = np.deg2rad(np.atleast_1d(input_angle_deg))
+        n = len(input_angles_rad)
+        
+        output_angles_rad = np.full(n, np.nan)
+        folding_angles_all = np.full((n, 4), np.nan)
+        num_solutions = np.zeros(n, dtype=int)           # num of solutions for each input angle
+                
+        if verbose:
+            print(f"Computing rho0 → rho{output_index} | sign = {sign} | n = {n}")
+
+        valid_count = 0
+        for i, rho_input in enumerate(input_angles_rad):
+            try:
+                rho1_solutions = self._solve_quadratic_rho1(rho_input)
+                if len(rho1_solutions) == 0:
+                    continue
+
+                solutions = [] # All solutions that satisfy condition in input angle
+                for rho1_candidate in rho1_solutions:
+                    full_rhos = self.solve_full_rhos_from_drive_and_rho1(rho_input, rho1_candidate)
+                    if full_rhos is None:
+                        continue
+
+                    out_val = full_rhos[output_index]
+                    # if input closer to zero, hard to sign comparison, choose first valid solution
+                    if abs(rho_input) < self.TOLERANCE:
+                        solutions.append(full_rhos)
+                        continue
+
+                    signs_match = (np.sign(out_val) == np.sign(rho_input))
+                    if (sign == 1 and signs_match) or (sign == -1 and not signs_match):
+                        solutions.append(full_rhos)
+
+                if len(solutions) == 0:
+                    continue
+                
+                if len(solutions) > 1 and verbose:
+                    print(f"  Input {np.rad2deg(rho_input):.2f}°: "
+                      f"{len(solutions)} solutions found!")
+                    for j, sol in enumerate(solutions):
+                        print(f"    Branch {j+1}: output={np.rad2deg(sol[output_index]):.2f}°")
+                
+                for j, sol in enumerate(solutions):
+                    output_angles_rad[i, j] = sol[output_index]
+                    folding_angles_all[i, j, :] = sol
+                
+                num_solutions[i] = len(solutions)
+                valid_count += 1
+                
+            except:
+                continue
+        
+        if verbose:
+            print(f"  Valid points: {valid_count}/{n}")
+            multi_sol = np.sum(num_solutions > 1)
+            if multi_sol > 0:
+                print(f" Multiple solutions found: {multi_sol} points")
+        
+        return {
+            'input_angles': input_angles_rad,
+            'output_angles': output_angles_rad,
+            'folding_angles_all': folding_angles_all,
+            'num_solutions': num_solutions,
+        }
+        
         
     # --- [Visualization Methods] ---
     def plot_2d_static(self):
@@ -579,17 +655,27 @@ class OrigamiDegree4Simulator:
 # --- Example ---
 if __name__ == "__main__":
     # Elliptic Case
-    #sector_angles = [60-0.5, 90-0.5, 135-0.5, 75-0.5]
+    sector_angles = [60-0.5, 90-0.5, 135-0.5, 75-0.5]
     # Hyperbolic Case
     #sector_angles = [60+0.5, 90+0.5, 135+0.5, 75+0.5]
     # Developable Case
-    #sector_angles = [60, 90, 135, 75]
+    #sector_angles = [60, 90, 75, 135]
     # Folding table
     #sector_angles = [112.5,112.5,90,135]
     # Flat-foldable
-    sector_angles = [80, 120, 100, 60]
+    #sector_angles = [80, 120, 100, 60]
     sim = OrigamiDegree4Simulator(sector_angles, contact=True)
-    sim.run_simulation(resolution=1000) 
+    sim.run_simulation(resolution=1000)
+    # Branch 1: input과 output 부호 동일
+    result_pos = sim.compute_folding_angles_from_input_output(
+        input_angle_deg=45, output_index=1, sign=1
+    )
+    # Branch 2: input과 output 부호 반대 (elliptic case 경우 input_index = 0, 그외 = 3)
+    result_neg = sim.compute_folding_angles_from_input_output(
+        input_angle_deg=45, output_index=1, sign=-1, verbose=True
+    )
+    print(result_neg) # (500, 4) dimension
+    
     sim.plot_2d_static()
     #sim.show_animated_2d_plot()
     sim.show_3d_interactive()
