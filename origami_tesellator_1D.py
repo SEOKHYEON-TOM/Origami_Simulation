@@ -6,38 +6,274 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from origami_simulator import OrigamiDegree4Simulator
 
 class OrigamiTesellator1D:
-    def __init__(self, alphas_deg, num_units, lengths=(1.0, 1.0, 1.0), scale_factor=1.0, sigma=1, contact=True):
+    def __init__(self, cell_configs, num_periods,
+                 lengths=(1.0, 1.0, 1.0),
+                 scale_factor=1.0,
+                 contact=True,
+                 verbose=True):
         """
-        1D Origami Strip 테셀레이션 시뮬레이터 (Class I Uniform Pattern 중심)
-        alphas_deg: [alpha1, alpha2, alpha3, alpha4] (단위: degree) -> 기존 클래스 입력 규격과 일치
-        num_units: 연결할 꼭짓점(Vertex)의 총 개수 N
-        lengths: [l_Left, l_Center, l_Right] 각 패널의 변 길이
-        scale_factor: 다음 유닛으로 갈 때의 상사비 c (1.0이면 원통형 나선, 1.0이 아니면 원뿔형 나선)
-        sigma: 기구학적 전파 모드 결정 파라미터 (1 또는 -1)
-        """
-        self.alphas_deg = np.array(alphas_deg)
-        self.alphas = np.deg2rad(self.alphas_deg)
-        self.num_units = num_units
-        self.lengths = lengths
-        self.scale_factor = scale_factor
-        self.sigma = sigma
-        self.contact = contact
+        N-periodic (maybe not) 1D Origami Strip tessellator.
         
-        # Class instance from Degree4Simulator (to match the folding term)
-        self.solver = OrigamiDegree4Simulator(np.roll(self.alphas_deg, -1), contact=False, verbose=False)
+        Parameters
+        ----------
+        cell_configs : list[dict]
+            N vertices list consisting of one period.
+            dict 
+                necessary keys:
+                "alphas"  : [a0,a1,a2,a3] [deg]
+                optional (use Default value when not declared):
+                "sigma"   : 1 or -1             output fold angle sign (default: 1)
+                "iout"    : 1, 2, or 3          output crease index  (default: 2)
+                "lengths" : (l_e1, l_e2, l_e3)  crease length         (default: global lengths)
+                
+        num_periods : int
         
-        # Imada (2025) 논문 수식 배정을 위한 인덱스 매핑 계산 (Input=e4, Output=e2 - same as creases facing each other over single vertex)
-        # 기존 솔버가 유클리드 케이스일 때 4번 주름(index 3)을 구동축으로 사용하므로 이를 매칭합니다.
-        t0, t1, t2, t3 = self.alphas
-        self.A = (np.sin(t3) * np.sin(t0)) / (np.sin(t1) * np.sin(t2))
-        self.B = (np.cos(t1) * np.cos(t2) - np.cos(t3) * np.cos(t0)) / (np.sin(t1) * np.sin(t2))
-        
-        if not (np.isclose(self.A, 1.0, atol=1e-2) and np.isclose(self.B, 0.0, atol=1e-2)):
-            print(f"[안내] 비대칭 각도 입력됨 -> Non-uniform 전파 모드로 기하학이 확장됩니다. (A={self.A:.3f}, B={self.B:.3f})")
+        lengths : tuple(3)  or  list[tuple(3)]
+            global crease lengths (e1, e2, e3)
+            can be single tuple applied to all cells
+            or N length lists applied for each cell
             
-        self.rhos = np.zeros((self.num_units, 4))       # [rho0, rho1, rho2, rho3]
-        self.global_faces = []                          # Global polygonal face for 3D rendering
-        self.global_vertices = []                       # Global 3D coordinate of all vertices
+        scale_factor : float
+        
+        contact : bool
+            Physical physical bound (-pi~pi) in local panel. ### NEED TO EXTEND FOR GLOBAL CONTACT SENSING ###
+
+        Examples
+        --------
+        # Single cell
+        OrigamiTesellator1D(
+            cell_configs=[{"alphas":[95,60,85,120], "sigma":-1, "iout":2}],
+            num_periods=8,
+        )
+ 
+        # 2-cell N-periodic strip
+        OrigamiTesellator1D(
+            cell_configs=[
+                {"alphas":[95,60,85,120], "sigma":-1, "iout":2},
+                {"alphas":[80,100,100,80], "sigma":1, "iout":1},
+            ],
+            num_periods=4,
+            lengths=(1.5, 1.0, 1.5),
+            scale_factor=1.0,
+        )
+        """
+        # 1. Input Validation
+        if not isinstance(cell_configs, (list, tuple)) or len(cell_configs) == 0:
+            raise ValueError("cell_configs는 1개 이상의 dict 리스트여야 합니다.")
+        for i, cfg in enumerate(cell_configs):
+            if not isinstance(cfg, dict):
+                raise TypeError(
+                    f"cell_configs[{i}]는 dict이어야 합니다. 현재: {type(cfg).__name__}"
+                )
+            if "alphas" not in cfg:
+                raise KeyError(f"cell_configs[{i}]에 필수 키 'alphas'가 없습니다.")
+            if len(cfg["alphas"]) != 4:
+                raise ValueError(
+                    f"cell_configs[{i}]['alphas']는 정확히 4개여야 합니다. "
+                    f"현재: {len(cfg['alphas'])}개"
+                )
+            sigma = cfg.get("sigma", 1)
+            iout  = cfg.get("iout",  2)
+            if sigma not in (1, -1):
+                raise ValueError(
+                    f"cell_configs[{i}]['sigma']는 1 또는 -1이어야 합니다. 현재: {sigma!r}"
+                )
+            if iout not in (1, 2, 3):
+                raise ValueError(
+                    f"cell_configs[{i}]['iout']는 1, 2, 3 중 하나여야 합니다. 현재: {iout!r}"
+                )
+        if int(num_periods) < 1:
+            raise ValueError(f"num_periods should be over or equal to 1. Value: {num_periods!r}")
+        
+        # 2. Global parameter
+        self.N            = len(cell_configs)
+        self.num_periods  = int(num_periods)
+        self.total_units  = self.N * self.num_periods
+        self.num_units    = self.total_units
+        self.scale_factor = float(scale_factor)
+        self.contact      = contact
+        self.verbose      = verbose
+        
+        # 3. Global Lengths Regularization
+        _lengths_0 = lengths[0]
+        if isinstance(_lengths_0, (int, float)):
+            # single tuple 
+            _global_lengths = [tuple(float(v) for v in lengths)] * self.N
+        else:
+            # list of tuples
+            if len(lengths) != self.N:
+                raise ValueError(
+                    f"list lengths({len(lengths)})is not identical with ({self.N})."
+                )
+            _global_lengths = [tuple(float(v) for v in l) for l in lengths]
+                
+        # 4. Cell-specific internal data generation (solver, A/B, CLV, etc.)
+        self.cells = []
+        for i, cfg in enumerate(cell_configs):
+            # First lengths in cell_configs, if not global lengths
+            cell_lengths = (
+            tuple(float(v) for v in cfg["lengths"])
+            if "lengths" in cfg
+            else _global_lengths[i]
+            )
+            self.cells.append(self._init_cell(cfg, cell_lengths))
+        
+        # 5. Summary of cells' information
+        self._print_init_summary()
+        
+        
+        self.rhos            = np.zeros((self.total_units, 4))
+        self.global_faces    = []
+        self.global_vertices = []
+        self.unit_iouts      = []
+
+    # ================================================================
+    #  __init__ supplementary methods
+    # ================================================================
+    
+    def _init_cell(self, cfg, lengths):
+        """
+        Process single cell config dict
+        
+        Return
+        --------
+        alphas_deg, alphas      : sector angles (deg, rad)
+        sigma                   : ±1
+        iout                    : 1|2|3
+        lengths                 : (l_e1, l_e2, l_e3)
+        geom                    : "euclidean" | "elliptic" | "hyperbolic"
+        roll                    : shift value for using 'np.roll' rearranging alpha angles
+        solver                  : OrigamiDegree4Simulator (single unit cell solver)
+        output_solver_idx       : output crease idx on solve_full lists
+        CLV                     : crease k → get_3d_geometry lv idx
+        A, B                    : Coefficient of linear propagation when iout = 2 (iout≠2 None)
+        is_flat_foldable        : checking Kawasaki condition
+        """
+        
+        alphas_deg = np.asarray(cfg["alphas"], dtype=float)
+        alphas     = np.deg2rad(alphas_deg)
+        sigma      = int(cfg.get("sigma", 1)) # if sigma not assigned, sigma = +1
+        iout       = int(cfg.get("iout",  2)) # if iout not assigned, iout = 2
+        
+        # Geo-type classification and roll assignment
+        # ─ Elliptic  (sum<2π): driving=e1 → roll= 0, θ0→α1
+        # ─ Euclidean (sum=2π): driving=e4 → roll=-1, θ0→α4
+        # ─ Hyperbolic(sum>2π): driving=e4 → roll=-1 (same as Euclidean)
+        total_angle = float(alphas.sum())
+        if np.isclose(total_angle, 2 * np.pi):
+            geom, roll = "euclidean",  -1
+        elif total_angle < 2 * np.pi:
+            geom, roll = "elliptic",    0
+        else:
+            geom, roll = "hyperbolic", -1
+ 
+        solver = OrigamiDegree4Simulator(
+            np.roll(alphas_deg, roll).tolist(),
+            contact=False, verbose=False,
+        )
+        
+        # solve_full arrays → tessellator crease idex mapping
+        #
+        # Euclidean/Hyperbolic (roll=-1, shift_amount=0):
+        #   [rho_tess-e1, rho_tess-e2, rho_tess-e3, rho_tess-e0]
+        #   tess crease k → return idx (k-1)%4
+        #
+        # Elliptic (roll=0, shift_amount=3):
+        #   [ρ_tess-e0, ρ_tess-e1, ρ_tess-e2, ρ_tess-e3]
+        #   tess crease k → return k
+
+        if geom == "elliptic":
+            output_solver_idx = iout % 4
+            CLV = {0: 1, 1: 2, 2: 3, 3: 4}
+        else:
+            output_solver_idx = (iout - 1) % 4
+            CLV = {0: 4, 1: 1, 2: 2, 3: 3}
+            
+        # A, B coefficients (Imada 2025 Eq.1)
+        # valid only when iout=2. If not, nonlinear → None
+        A, B = None, None
+        if iout == 2:
+            t0, t1, t2, t3 = alphas
+            denom = np.sin(t1) * np.sin(t2)
+            if abs(denom) > 1e-12:
+                A = np.sin(t3) * np.sin(t0) / denom
+                B = (np.cos(t1) * np.cos(t2) - np.cos(t3) * np.cos(t0)) / denom
+                
+        # Kawasaki Condition (flat-foldability): θ0+θ2 = θ1+θ3 = π
+        t0, t1, t2, t3 = alphas
+        is_flat_foldable = (
+            np.isclose(t0 + t2, np.pi, atol=1e-3)
+            and np.isclose(t1 + t3, np.pi, atol=1e-3)
+        )
+        
+        return {
+            "alphas_deg":        alphas_deg,
+            "alphas":            alphas,
+            "sigma":             sigma,
+            "iout":              iout,
+            "lengths":           lengths,
+            "geom":              geom,
+            "roll":              roll,
+            "solver":            solver,
+            "output_solver_idx": output_solver_idx,
+            "CLV":               CLV,
+            "A":                 A,
+            "B":                 B,
+            "is_flat_foldable":  is_flat_foldable,
+        }
+        
+    def _print_init_summary(self):
+        if self.verbose:
+        #print cell configurations summary
+            _GEOM_SYM = {"euclidean": "⬡ Euc", "elliptic": "△ Ell", "hyperbolic": "▽ Hyp"}
+    
+            print(f"\n{'='*68}")
+            print(f"  OrigamiTesellator1D  |  N={self.N} cell(s) × "
+                f"{self.num_periods} period(s) = {self.total_units} vertices"
+                f"  |  scale={self.scale_factor}")
+            print(f"{'─'*68}")
+            print(f"  {'#':>2}  {'Geom':>8}  {'iout':>4}  {'σ':>2}  "
+                f"{'FF':>2}  {'Propagation':<18}  {'A':>8}  {'B':>8}")
+            print(f"  {'─'*2}  {'─'*8}  {'─'*4}  {'─'*2}  "
+                f"{'─'*2}  {'─'*18}  {'─'*8}  {'─'*8}")
+            
+            for i, cell in enumerate(self.cells):
+                sym = _GEOM_SYM.get(cell["geom"], "? ???")
+                ff  = "✓" if cell["is_flat_foldable"] else "✗"
+    
+                if cell["A"] is not None:
+                    A, B = cell["A"], cell["B"]
+                    if np.isclose(A, 1.0, atol=1e-2) and np.isclose(B, 0.0, atol=1e-2):
+                        cls = "linear (Class I)"
+                    elif np.isclose(abs(A), 1.0, atol=1e-2):
+                        cls = "linear (Class IV)"
+                    elif abs(A) < 1.0:
+                        cls = "linear (Class II)"
+                    else:
+                        cls = "linear (Class III)"
+                    A_str = f"{A:8.4f}"
+                    B_str = f"{B:8.4f}"
+                else:
+                    iout = cell["iout"]
+                    cls  = f"nonlinear (e{iout} adj.)"
+                    A_str, B_str = "     N/A", "     N/A"
+    
+                print(f"  {i:2d}  {sym:>8}  {cell['iout']:4d}  {cell['sigma']:+2d}  "
+                    f"{ff:>2}  {cls:<18}  {A_str}  {B_str}")
+    
+            print(f"{'='*68}\n")
+        else:
+            return
+    
+    def _rodrigues(self, axis, angle):
+        norm = np.linalg.norm(axis)
+        if norm < 1e-9:
+            return np.eye(3)
+        axis = axis / norm
+        K = np.array([[       0, -axis[2],  axis[1]],
+                      [ axis[2],        0, -axis[0]],
+                      [-axis[1],  axis[0],        0]])
+        return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
     
     def _get_rot_from_vecs(self, u, v):
         """ calculate rotation matrix R for rotating from u to v """
@@ -52,249 +288,621 @@ class OrigamiTesellator1D:
         else:
             k = c / nc
             theta = np.arccos(np.clip(d, -1.0, 1.0))
-            return self.solver._rodrigues_rotation_matrix(k, theta)
+            return self._rodrigues(k, theta)
 
-    def _apply_lengths_and_scale(self, local_verts, unit_index):
-        """로컬 vertex에 길이와 스케일 적용""" # v0는 (1,0,0)으로 고정
-        vO = local_verts[0] # single vertex point
-        for i in range(1, 4):
-            vec = local_verts[i] - vO
-            norm_vec = np.linalg.norm(vec)
-            if norm_vec > 1e-9:
-                local_verts[i] = vO + (vec/norm_vec) * self.lengths[i-1]
+    def _apply_lengths_and_scale(self, local_verts, unit_index, cell_lengths, CLV):
+        lv = local_verts.copy()
+        O  = lv[0]
+        for k in (1, 2, 3):           # tess creases e1, e2, e3
+            vi  = CLV[k]
+            vec = lv[vi] - O
+            n   = np.linalg.norm(vec)
+            if n > 1e-9:
+                lv[vi] = O + (vec / n) * cell_lengths[k - 1]
+        return lv * (self.scale_factor ** unit_index)
         
-        # 스케일 팩터 반영
-        c_scale = self.scale_factor ** unit_index
-        return local_verts * c_scale
+    def _place_unit_global(self, local_verts, prev_gv, curr_CLV, prev_iout, prev_CLV):
+        """Using rotation and translation, patch local unit to global tesellated strips
         
-    def _place_unit_global(self, local_verts, prev_global_verts):
-        """로컬 단일 유닛을 이전 유닛의 꼬리(Global Space)에 맞춰 회전 및 이동시켜 결합"""
-        if prev_global_verts is None:
+        Eq. (A4) in Imada(2026):
+            o_{n+1}   = o_n + l^{iout} · c^{iout}_n     [position]
+            c^0_{n+1} = -c^{iout}_n                     [input crease reversal]
+            n^0_{n+1} = n^{iout-1}_n                    [face normal continuity]
+        
+        Parameters
+        ----------
+        curr_CLV  : current  cell's CLV  (for local_verts idx)
+        prev_iout : previous cell's output crease index
+        prev_CLV  : previous cell's CLV  (for prev_gv idx)
+        
+        """
+        if prev_gv is None:
             return local_verts
-    
-        # 이전(global) 유닛의 O(0), v1(1), v2(2)를 이용해 Face 1의 방향을 캡처
-        origin_global = prev_global_verts[2]
-        u_global = prev_global_verts[2] - prev_global_verts[0] 
-        ref_global = prev_global_verts[1] - prev_global_verts[0]
-        normal_global = np.cross(ref_global, u_global)
+
+        k       = prev_iout
+        k_idx   = prev_CLV[k]
+        km1_idx = prev_CLV[(k - 1) % 4]
         
-        # 현재(local) 유닛의 O(0), v1(1), v0(4)를 이용해 Face 4의 방향을 캡처
-        u_local = local_verts[4] - local_verts[0]
-        ref_local = local_verts[1] - local_verts[0] 
-        normal_local = np.cross(u_local, ref_local) # rotation 방향 맞추기 (CCW)
+        # Eq. A4 (i): next origin = previous output crease end point
+        origin = prev_gv[k_idx]
         
-        # (1) Align crease line
-        R_align_crease = self._get_rot_from_vecs(-u_local, u_global)
-        # (2) Align normal vectors with creases aligned
-        rotated_normal_local = np.dot(normal_local, R_align_crease.T)
-        R_align_normal = self._get_rot_from_vecs(rotated_normal_local, normal_global)
+        # previous cell: c^{iout}, c^{iout-1} → n^{iout-1}
+        ck    = prev_gv[k_idx]   - prev_gv[0]
+        ckm1  = prev_gv[km1_idx] - prev_gv[0]
+        n_prev = np.cross(ckm1, ck)
         
-        # 최종 결합 변환 행렬 (Crease -> Face 순서)
-        R_final = R_align_normal @ R_align_crease
-        
-        # 로컬 좌표계를 전역 좌표계로 변환 및 원점 이동
-        return np.dot(local_verts, R_final.T) + origin_global
-    
+        # current cell: c^0, c^1 → n^0
+        c0_new = local_verts[curr_CLV[0]] - local_verts[0]
+        c1_new = local_verts[curr_CLV[1]] - local_verts[0]
+        n_new  = np.cross(c0_new, c1_new)
+ 
+        # Eq. A4 (ii): c^0_{n+1} = -c^{iout}_n
+        R1 = self._get_rot_from_vecs(-c0_new, ck)
+        # Eq. A4 (iii): n^0_{n+1} = n^{iout-1}_n
+        R2 = self._get_rot_from_vecs(R1 @ n_new, n_prev)
+ 
+        R = R2 @ R1
+        return local_verts @ R.T + origin
+
+    # =========================================================================
+    #  Main Calculation
+    # =========================================================================
+
     def compute_strip_kinematics(self, initial_rho0):
-        """점화식 전파 후 100% 정확한 4개 각도 도출 및 벡터-면(Face) 기반 3D 테셀레이션 조립"""
-        self.rhos.fill(0)
-        self.global_faces = []
+        """
+        N-periodic folding angle propagation + 3D geometry assembly
+        Return the number of units that successfully calculated
+        """
+        self.rhos            = np.zeros((self.total_units, 4))
+        self.global_faces    = []
         self.global_vertices = []
+        self.unit_iouts      = []
+ 
+        rho_in   = float(initial_rho0)
+        prev_out = None # previous output folding angle (for continuity tracking)
+        prev_gv  = None # previous global vertex list
+        valid    = 0
         
-        current_input_rho0 = initial_rho0
-        valid_units = 0
+        for t in range(self.total_units):
+            n    = t % self.N
+            cell = self.cells[n]
+ 
+            solver = cell["solver"]
+            A      = cell["A"]
+            B      = cell["B"]
+            sigma  = cell["sigma"]
+            iout   = cell["iout"]
+            osi    = cell["output_solver_idx"]
+            CLV    = cell["CLV"]
         
-        # 이전 유닛의 전역 좌표 추적용 변수
-        prev_global_verts = None
+            prev_cell = self.cells[(t - 1) % self.N] if t > 0 else None
+            
+            # ── 1. fold angle oracle ─────────────────────────────────────────
+            if iout == 2 and A is not None:
+                # Linear propagation (Imada Eq. 1)
+                cos_next = A * np.cos(rho_in) + B
+                if abs(cos_next) > 1.0:     # self-blocking
+                    break
+                predicted = (sigma
+                             * (1.0 if rho_in >= 0 else -1.0)
+                             * np.arccos(np.clip(cos_next, -1.0, 1.0)))
+            else:
+                predicted = None            #  Nonlinear: select branch using continuity tracking
         
-        for t in range(self.num_units):
-            # 1. calculate output folding angle(rho2) using recursive relation
-            cos_next = self.A * np.cos(current_input_rho0) + self.B
-            if abs(cos_next) > 1.0: # analytic & physical condition (Self-blocking)
+            # ── 2. single-vertex solve ───────────────────────────────────────
+            rho1_sols = solver._solve_quadratic_rho1(rho_in)
+            if not rho1_sols:
                 break
-            predicted_output_rho2 = self.sigma * np.sign(current_input_rho0) * np.arccos(cos_next)
             
-            # 2. Find algebraic solution of rho1 solution sets for rigorous mode selection 
-            rho1_sols = self.solver._solve_quadratic_rho1(current_input_rho0)
-            if not rho1_sols: break
-                
-            best_full_set = None
-            min_error = float('inf')
+            # ── 3. branch selection ──────────────────────────────────────────
+            best_fs = None
+            min_err = float('inf')
             
-            # 솔버의 두 브랜치 중 점화식이 예측한 r2와 완벽히 일치하는 모드 고르기 (Lock-in) - developable case
-            for rho1_candidate in rho1_sols:
+            for r1 in rho1_sols:   
+                fs = solver.solve_full_rhos_from_drive_and_rho1(rho_in, r1)
+                if fs is None: continue
+                out = fs[osi]
                 
-                full_set = self.solver.solve_full_rhos_from_drive_and_rho1(current_input_rho0, rho1_candidate)
-                if full_set is None: continue
-                
-                output_crease_idx = (1 + self.solver.shift_amount) % 4
-                geo_error = abs(abs(full_set[output_crease_idx]) - abs(predicted_output_rho2))
-
-                continuity_error = 0 # check whether sign is MV or MM/VV
-                if np.sign(full_set[output_crease_idx]) != np.sign(predicted_output_rho2): # penalty function
-                    continuity_error = 1.0
-                        
-                total_error = geo_error + continuity_error
-                
-                if total_error < min_error:
-                    min_error = total_error
-                    best_full_set = full_set
+                if predicted is not None:
+                    # iout=2
+                    err = (abs(abs(out) - abs(predicted))
+                           + (0.0 if np.sign(out) == np.sign(predicted) else 1.0))
+                elif prev_out is None:
+                    # first step: sigma sign standard
+                    exp_sign = sigma * (1.0 if rho_in >= 0 else -1.0)
+                    err = 0.0 if np.sign(out) == exp_sign else 2.0
+                else:
+                    err = abs(out - prev_out)
                     
-            if best_full_set is None: break
+                if err < min_err:
+                    min_err = err
+                    best_fs = fs
+                    
+            if best_fs is None:
+                break
+            
+            out_rho = best_fs[osi]
+            if abs(out_rho) > np.pi + 1e-6:
+                break
                 
-            self.rhos[t] = best_full_set
-            valid_units += 1
+            self.rhos[t] = best_fs
+            valid += 1
+            self.unit_iouts.append(iout)
             
-            # 3. patch 3D geometry
-            # local coordinates (vO: origin, v1,v2,v3,v0: end points of 4 creases)
-            _, local_verts = self.solver.get_3d_geometry(self.rhos[t])
-            local_verts = self._apply_lengths_and_scale(local_verts, t)
-            global_unit_verts = self._place_unit_global(local_verts, prev_global_verts)
-            
-            self.global_vertices.append(global_unit_verts)
-            prev_global_verts = global_unit_verts
-            
-            # Face assembly (for 3D rendering)
-            vO, v1, v2, v3, v0 = global_unit_verts
-            self.global_faces.append([[vO, v0, v1],
-                                      [vO, v1, v2],
-                                      [vO, v2, v3],
-                                      [vO, v3, v0]])
-            
-            current_input_rho0 = best_full_set[output_crease_idx]
-            
-        return valid_units
-    
-    def draw_crease_polylines(self):
-        """
-        모든 유닛의 꼭짓점들을 추적하여 연속된 주름선(Polylines)들을 3D 축에 렌더링합니다.
-        중앙 뼈대(Backbone), 왼쪽 주름선(Left ridge), 오른쪽 주름선(Right ridge)을 분리하여 연결합니다.
-        """
-        if not self.global_vertices:
-            return
-
-        backbone_pts = []
-        for global_verts in self.global_vertices:
-            backbone_pts.append(global_verts[0])
-        backbone_pts.append(self.global_vertices[-1][2]) # output vertex of last unit
-        backbone_pts = np.array(backbone_pts)
-        
-        right_pts = []
-        for global_verts in self.global_vertices:
-            right_pts.append(global_verts[1])  # v1
-        right_pts = np.array(right_pts)
-        
-        left_pts = []
-        for global_verts in self.global_vertices:
-            left_pts.append(global_verts[3])  # v3
-        left_pts = np.array(left_pts)
-        
-        cross_xs, cross_ys, cross_zs = [], [], []
-        
-        for global_verts in self.global_vertices:
-            vO, v1, v2, v3, v0 = global_verts
-            # 각 정점에서 파생되는 로컬 주름가지들을 선으로 연결
-            for v in [v1, v2, v3, v0]:
-                cross_xs.extend([vO[0], v[0], np.nan])
-                cross_ys.extend([vO[1], v[1], np.nan])
-                cross_zs.extend([vO[2], v[2], np.nan])
-                
-        self.line_backbone.set_data(backbone_pts[:, 0], backbone_pts[:, 1])
-        self.line_backbone.set_3d_properties(backbone_pts[:, 2])
-        
-        self.line_left.set_data(left_pts[:, 0], left_pts[:, 1])
-        self.line_left.set_3d_properties(left_pts[:, 2])
-        
-        self.line_right.set_data(right_pts[:, 0], right_pts[:, 1])
-        self.line_right.set_3d_properties(right_pts[:, 2])
-        
-        self.line_cross.set_data(cross_xs, cross_ys)
-        self.line_cross.set_3d_properties(cross_zs)
+            # ── 4. 3D geometry ────────────────────────────────────────────────
+            _, lv_raw = solver.get_3d_geometry(self.rhos[t])
+            lv = self._apply_lengths_and_scale(lv_raw, t, cell["lengths"], CLV)
+ 
+            prev_iout = prev_cell["iout"] if prev_cell is not None else None
+            prev_CLV  = prev_cell["CLV"]  if prev_cell is not None else None
+ 
+            gv = self._place_unit_global(lv, prev_gv, CLV, prev_iout, prev_CLV)
+ 
+            self.global_vertices.append(gv)
+            prev_gv = gv
+ 
+            # Face assembly: CLV regardless of geom
+            O  = gv[0]
+            e0 = gv[CLV[0]]
+            e1 = gv[CLV[1]]
+            e2 = gv[CLV[2]]
+            e3 = gv[CLV[3]]
+            self.global_faces.append([
+                [O, e0, e1],    # face 0: e0~e1
+                [O, e1, e2],    # face 1: e1~e2
+                [O, e2, e3],    # face 2: e2~e3
+                [O, e3, e0],    # face 3: e3~e0
+            ])
+ 
+            prev_out = out_rho
+            rho_in   = out_rho
+ 
+        return valid
 
     def validate_with_algebraic_solver(self, unit_index=0, verbose=True):
-        """수학적 교차 검증 함수 (이제 무조건 PASS가 뜹니다!)"""
-        # print when verbose = Ture
-        r0, r1, r2, r3 = self.rhos[unit_index]
-        t0, t1, t2, t3 = self.alphas
-        
-        # 구면 코사인 법칙을 활용한 양방향 폐루프 거리 검증
-        val1 = np.cos(t0)*np.cos(t1) - np.sin(t0)*np.sin(t1)*np.cos(r1)
-        val2 = np.cos(t3)*np.cos(t2) - np.sin(t3)*np.sin(t2)*np.cos(r3)
-        
-        is_valid = np.isclose(val1, val2, atol=1e-3)
+        """
+        single vertex validation using spherical cosines (regardless of iout).
+        rhos[t] 배열 구조: [rho_e1, rho_e2, rho_e3, rho_e0] (tessellator idx)
+        """
+        n = unit_index % self.N
+        t0, t1, t2, t3 = self.cells[n]["alphas"]
+        r_e1, r_e2, r_e3, r_e0 = self.rhos[unit_index]
+ 
+        val1 = np.cos(t0) * np.cos(t1) - np.sin(t0) * np.sin(t1) * np.cos(r_e2)
+        val2 = np.cos(t2) * np.cos(t3) - np.sin(t2) * np.sin(t3) * np.cos(r_e0)
+        ok   = np.isclose(val1, val2, atol=1e-3)
+ 
         if verbose:
-            print(f"[Unit {unit_index} Validation] Imported Algebraic Check: {'PASS' if is_valid else 'FAIL'}")
-            print(f"  -> Verified Extracted Angles: r0={r0:.4f}, r1={r1:.4f}, r2={r2:.4f}, r3={r3:.4f}")
-            
-        return is_valid
-
-    def setup_interactive_viewer(self):
-        """Matplotlib 기반 3D 1D 테셀레이션 인터랙티브 스트립 뷰어"""
-        fig = plt.figure(figsize=(12, 8))
-        self.ax_3d = fig.add_subplot(111, projection='3d')
-        plt.subplots_adjust(bottom=0.2)
-        
-        ax_slider = plt.axes([0.2, 0.05, 0.6, 0.03])
-        self.slider_rho0 = Slider(ax_slider, r'Input $\rho_0^1$ (deg)', -175, 175, valinit=45)
-        
-        # 초기 렌더링용 컬렉션 생성
-        self.poly_collection = Poly3DCollection([], edgecolors='black', linewidths=1, alpha=0.85)
-        self.ax_3d.add_collection3d(self.poly_collection)
-        
-        # Face 구별용 색상 팔레트
-        self.face_colors = ['lightgray', 'lightblue', 'lightgreen', 'lightcoral']
-        
-        # [추가된 부분] 자취가 남지 않도록 주름선(Polyline) 빈 객체들을 미리 딱 한 번만 생성해 둡니다.
-        self.line_backbone, = self.ax_3d.plot([], [], [], color='crimson', linewidth=3, linestyle='-', label='Central Backbone', zorder=5)
-        self.line_left, = self.ax_3d.plot([], [], [], color='navy', linewidth=2, linestyle='--', label='Left Crease Line', zorder=4)
-        self.line_right, = self.ax_3d.plot([], [], [], color='darkgreen', linewidth=2, linestyle='--', label='Right Crease Line', zorder=4)
-        self.line_cross, = self.ax_3d.plot([], [], [], color='black', linewidth=1, alpha=0.5, zorder=3)
-        self.ax_3d.legend()
-
-        def update(val):
-            rho0_rad = np.deg2rad(self.slider_rho0.val)
-            valid_units = self.compute_strip_kinematics(rho0_rad)
-            
-            # 3D 폴리곤 데이터 업데이트
-            if len(self.global_faces) > 0:
-                flattened_faces = [face for unit_faces in self.global_faces for face in unit_faces]    # 2차원 리스트를 1차원 리스트로 평탄화 
-                self.poly_collection.set_verts(flattened_faces)
-                
-                # 색상 배열 입히기 (4개의 패널이 반복됨)
-                colors = self.face_colors * valid_units
-                self.poly_collection.set_facecolors(colors)
-                
-            self.draw_crease_polylines()
-                
-            # 축 범위 자동 조절 및 렌더링
-            self.ax_3d.set_xlim(-1, self.num_units * 1.5)
-            self.ax_3d.set_ylim(-self.num_units, self.num_units)
-            self.ax_3d.set_zlim(-self.num_units, self.num_units)
-            self.ax_3d.set_title(f'1D Origami Tessellation Strip - Active Nodes: {valid_units} / N={self.num_units}')
-            
-            if valid_units > 0:
-                self.validate_with_algebraic_solver(0, verbose=False)
-            fig.canvas.draw_idle()
-            
-        self.slider_rho0.on_changed(update)
-        update(45)
-        plt.show()
-
-# --- 메인 실행 루프 ---
-if __name__ == "__main__":
-    # 1. 완벽한 전개형(Developable) Miura-Ori 스트립 유닛 섹터 각도 정의
-    # 조건 만족: theta0 + theta2 = 180, theta1 + theta3 = 180
-    #alphas = [95, 50, 95, 50] 
-    alphas = [95, 60, 85, 120]
-    #alphas = [60, 85, 120, 95]
-    #alphas = [80, 100, 100, 80]
-    #alphas = [80, 60, 100, 40]
-    #alphas = [95, 50, 95, 50]
+            print(f"[Unit {unit_index} / Cell {n}] Spherical check: {'PASS' if ok else 'FAIL'}")
+            print(f"  rho_e0={np.rad2deg(r_e0):.2f}°  rho_e1={np.rad2deg(r_e1):.2f}°"
+                  f"  rho_e2={np.rad2deg(r_e2):.2f}°  rho_e3={np.rad2deg(r_e3):.2f}°")
+        return ok
     
-    # 2. 8개의 유닛이 기하학적으로 완벽히 연쇄 조립되는 테셀레이터 인스턴스 생성
-    # scale_factor=0.95로 주면 달팽이관처럼 점진적으로 작아지며 말리는 Conical 형상이 됩니다.
-    # 완벽한 1자형 튜브를 원하시면 scale_factor=1.0 으로 세팅하세요.
-    tessellator = OrigamiTesellator1D(alphas_deg=alphas, num_units=3, lengths=(1.5, 1.0, 1.5), scale_factor=0.95, sigma=-1)
-   
-    # 3. UI 시각화 기동
-    tessellator.setup_interactive_viewer()
+    # =========================================================================
+    #  Visualization
+    # =========================================================================
+ 
+    _CELL_PALETTES = [
+        ['#CCCCCC', '#A8C4E0', '#A8D4A8', '#E0B8B0'],
+        ['#F0E0A0', '#D8C878', '#E8D8A8', '#C8B880'],
+        ['#D0C0F0', '#C0A8E0', '#D8B8F0', '#B0A0D8'],
+        ['#A8E4E4', '#88CCCC', '#A0DCDC', '#78C4C4'],
+    ]
+
+    def _build_crease_lines(self):
+        """
+        From global_vertices, backbone / side / cross line coordinate calculation.
+ 
+        Returns
+        -------
+        backbone : (M,3)       vertex origins + last output crease end-point
+        e1_pts   : (M-1, 3)   tess-e1 end-point of each vertex
+        e3_pts   : (M-1, 3)   tess-e3 end-point of each vertex
+        cross    : (cx,cy,cz)  4-spoke crease line (NaN 분리)
+        """
+        if not self.global_vertices:
+            return None, None, None, None
+        
+        # Backbone: every origin + last output end-point
+        backbone = [gv[0] for gv in self.global_vertices]
+        if self.unit_iouts:
+            last_t    = len(self.global_vertices) - 1
+            last_CLV  = self.cells[last_t % self.N]["CLV"]
+            backbone.append(self.global_vertices[-1][last_CLV[self.unit_iouts[-1]]])
+        backbone = np.array(backbone)
+        
+        # Side lines: tess-e1, tess-e3 end-point
+        e1_pts, e3_pts = [], []
+        for t, gv in enumerate(self.global_vertices):
+            CLV = self.cells[t % self.N]["CLV"]
+            e1_pts.append(gv[CLV[1]])
+            e3_pts.append(gv[CLV[3]])
+        e1_pts = np.array(e1_pts)
+        e3_pts = np.array(e3_pts)
+        
+        # Cross spokes: origin → 4 crease end-point
+        cx, cy, cz = [], [], []
+        for t, gv in enumerate(self.global_vertices):
+            CLV = self.cells[t % self.N]["CLV"]
+            O = gv[0]
+            for k in range(4):
+                ep = gv[CLV[k]]
+                cx += [O[0], ep[0], np.nan] # to make each spoke as independent line
+                cy += [O[1], ep[1], np.nan]
+                cz += [O[2], ep[2], np.nan]
+ 
+        return backbone, e1_pts, e3_pts, (cx, cy, cz)
+    
+    def _render_faces_and_lines(self, ax, valid,
+                                poly_col, line_bb, line_e1, line_e3, line_cr):
+        """Renew Poly3DCollection + Line3D object of current result."""
+        
+        # faces
+        if self.global_faces and valid > 0:
+            flat   = [f for unit in self.global_faces for f in unit]
+            colors = []
+            for t in range(valid):
+                pal = self._CELL_PALETTES[t % self.N % len(self._CELL_PALETTES)]
+                colors.extend(pal)
+            poly_col.set_verts(flat)
+            poly_col.set_facecolors(colors)
+            
+        # crease lines
+        backbone, e1_pts, e3_pts, (cx, cy, cz) = self._build_crease_lines()
+        
+        def _set(line, pts):
+            line.set_data(pts[:, 0], pts[:, 1])
+            line.set_3d_properties(pts[:, 2])
+            
+        if backbone is not None:
+            _set(line_bb, backbone)
+            _set(line_e1, e1_pts)
+            _set(line_e3, e3_pts)
+            line_cr.set_data(cx, cy)
+            line_cr.set_3d_properties(cz)
+            
+        # axis range
+        rng = max(valid * 1.6, 2.0)
+        ax.set_xlim(-rng, rng)
+        ax.set_ylim(-rng, rng)
+        ax.set_zlim(-rng, rng)
+        
+    def plot_3d(self, rho0_deg, figsize=(11, 8)):
+        """
+        Plot static strip 3D shape for given input angle.
+ 
+        Parameters
+        ----------
+        rho0_deg : float   input fold angle [deg]
+        figsize  : tuple
+        """
+        valid = self.compute_strip_kinematics(np.deg2rad(rho0_deg))
+ 
+        fig = plt.figure(figsize=figsize)
+        ax  = fig.add_subplot(111, projection='3d')
+ 
+        if valid == 0:
+            ax.set_title(f"No valid units at rho0 = {rho0_deg} deg")
+            plt.show()
+            return
+ 
+        poly    = Poly3DCollection([], edgecolors='#555555', linewidths=0.5, alpha=0.85)
+        ax.add_collection3d(poly)
+        line_bb, = ax.plot([], [], [], color='crimson',   lw=2.5, label='Backbone')
+        line_e1, = ax.plot([], [], [], color='navy',      lw=1.5, ls='--', label='e1 tips')
+        line_e3, = ax.plot([], [], [], color='darkgreen', lw=1.5, ls='--', label='e3 tips')
+        line_cr, = ax.plot([], [], [], color='black',     lw=0.6, alpha=0.35)
+ 
+        self._render_faces_and_lines(ax, valid, poly,
+                                     line_bb, line_e1, line_e3, line_cr)
+ 
+        ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+        ax.legend(fontsize=8, loc='upper left')
+ 
+        cell_desc = "  |  ".join(
+            f"cell{i} iout={c['iout']} sigma={c['sigma']:+d}"
+            for i, c in enumerate(self.cells)
+        )
+        ax.set_title(
+            f"rho0 = {rho0_deg} deg  |  {valid}/{self.total_units} units\n{cell_desc}",
+            fontsize=9
+        )
+        plt.tight_layout()
+        plt.show()
+        
+    def setup_interactive_viewer(self):
+        """
+        Interactive 3D viewer with rho0 slider.
+        """
+        fig = plt.figure(figsize=(12, 8))
+        ax  = fig.add_subplot(111, projection='3d')
+        plt.subplots_adjust(bottom=0.18)
+ 
+        ax_sl  = plt.axes([0.20, 0.06, 0.60, 0.03])
+        slider = Slider(ax_sl, 'rho0 (deg)', -175, 175, valinit=45)
+ 
+        # Initial Rendering object generation (no afterimage)
+        poly    = Poly3DCollection([], edgecolors='#555555', linewidths=0.5, alpha=0.85)
+        ax.add_collection3d(poly)
+        line_bb, = ax.plot([], [], [], color='crimson',   lw=2.5, label='Backbone')
+        line_e1, = ax.plot([], [], [], color='navy',      lw=1.5, ls='--', label='e1 tips')
+        line_e3, = ax.plot([], [], [], color='darkgreen', lw=1.5, ls='--', label='e3 tips')
+        line_cr, = ax.plot([], [], [], color='black',     lw=0.6, alpha=0.35)
+        ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+        ax.legend(fontsize=8, loc='upper left')
+        
+        def update(val=None):
+            rho0_deg = slider.val
+            valid    = self.compute_strip_kinematics(np.deg2rad(rho0_deg))
+ 
+            self._render_faces_and_lines(ax, valid, poly,
+                                         line_bb, line_e1, line_e3, line_cr)
+ 
+            cell_desc = "  |  ".join(
+                f"cell{i} iout={c['iout']} sigma={c['sigma']:+d}"
+                for i, c in enumerate(self.cells)
+            )
+            ax.set_title(
+                f"rho0 = {rho0_deg:.1f} deg  |  {valid}/{self.total_units} units\n{cell_desc}",
+                fontsize=9
+            )
+            fig.canvas.draw_idle()
+ 
+        slider.on_changed(update)
+        update()
+        plt.show()
+        
+    # =========================================================================
+    #  File convert
+    # =========================================================================
+    def export_to_mat(self, filepath, rho0_deg):
+        """
+        current strip geometry to MATLAB patch .mat file.
+        """
+        import scipy.io
+
+        valid = self.compute_strip_kinematics(np.deg2rad(rho0_deg))
+        if valid == 0:
+            print(f"[WARNING] No valid unit at rho0={rho0_deg}.")
+            return
+
+        # ── vertex coordinate ─────────────────────────────────────────
+        # MATLAB patch: vertices (V×3), faces (F×3) — 1-indexed
+        all_verts  = []   # (x, y, z) list
+        all_faces  = []   # triangular face (v1, v2, v3) list, 1-indexed
+
+        vert_offset = 0
+        for unit_faces in self.global_faces:
+            for tri in unit_faces:          # tri = [v0, v1, v2] each 3D vertices
+                v_start = vert_offset + 1   # MATLAB: 1-indexed
+                for v in tri:
+                    all_verts.append(v)
+                all_faces.append([v_start, v_start+1, v_start+2])
+                vert_offset += 3
+
+        vertices = np.array(all_verts, dtype=float)  # (N, 3)
+        faces    = np.array(all_faces, dtype=int)     # (M, 3)
+
+        # ── backbone coordinate ─────────────────────────────────────────────
+        result = self._build_crease_lines()
+        backbone = result[0] if result[0] is not None else np.zeros((0, 3))
+        e1_pts   = result[1] if result[1] is not None else np.zeros((0, 3))
+        e3_pts   = result[2] if result[2] is not None else np.zeros((0, 3))
+
+        # ── meta information ─────────────────────────────────────────────────
+        meta = {
+            "rho0_deg":    float(rho0_deg),
+            "valid_units": float(valid),
+            "total_units": float(self.total_units),
+            "N_period":    float(self.N),
+        }
+
+        scipy.io.savemat(filepath, {
+            "vertices": vertices,
+            "faces":    faces,
+            "backbone": backbone,
+            "e1_pts":   e1_pts,
+            "e3_pts":   e3_pts,
+            "meta":     meta,
+        })
+        print(f"[SAVE] {filepath}  "
+            f"({len(vertices)} verts, {len(faces)} faces, {valid} units)")
+        
+    # =========================================================================
+    #  Debugging
+    # =========================================================================
+        
+    def debug_kinematics(self, rho0_deg, stop_on_flip=True):
+        """
+        각 step의 rho값, branch selection 오차, geometry 이상 여부를 출력.
+
+        Parameters
+        ----------
+        rho0_deg     : float  입력각 (degrees)
+        stop_on_flip : bool   flip 감지 시 즉시 중단
+        """
+        rho_in   = np.deg2rad(rho0_deg)
+        prev_out = None
+        prev_gv  = None
+        valid    = 0
+
+        print(f"\n{'='*72}")
+        print(f"  debug_kinematics  |  rho0={rho0_deg}°  |  "
+            f"N={self.N}  periods={self.num_periods}")
+        print(f"{'─'*72}")
+        print(f"  {'t':>3}  {'cell':>4}  {'iout':>4}  "
+            f"{'rho_in(°)':>10}  {'rho_out(°)':>11}  "
+            f"{'branch_err':>10}  {'status'}")
+        print(f"  {'─'*3}  {'─'*4}  {'─'*4}  "
+            f"{'─'*10}  {'─'*11}  {'─'*10}  {'─'*20}")
+
+        rho_sequence = []   # (t, rho_in_deg, rho_out_deg) 기록
+
+        for t in range(self.total_units):
+            n    = t % self.N
+            cell = self.cells[n]
+
+            solver = cell["solver"]
+            A, B   = cell["A"], cell["B"]
+            sigma  = cell["sigma"]
+            iout   = cell["iout"]
+            osi    = cell["output_solver_idx"]
+            CLV    = cell["CLV"]
+            prev_cell = self.cells[(t-1) % self.N] if t > 0 else None
+
+            # ── oracle 계산 ──────────────────────────────────────────────
+            if iout == 2 and A is not None:
+                cos_next = A * np.cos(rho_in) + B
+                if abs(cos_next) > 1.0:
+                    print(f"  {t:3d}  {n:4d}  {iout:4d}  "
+                        f"{np.rad2deg(rho_in):10.4f}  "
+                        f"{'N/A':>11}  {'N/A':>10}  ⛔ self-blocking")
+                    break
+                predicted = (sigma * (1. if rho_in >= 0 else -1.)
+                            * np.arccos(np.clip(cos_next, -1., 1.)))
+            else:
+                predicted = None
+
+            # ── quadratic solve ──────────────────────────────────────────
+            rho1_sols = solver._solve_quadratic_rho1(rho_in)
+            if not rho1_sols:
+                print(f"  {t:3d}  {n:4d}  {iout:4d}  "
+                    f"{np.rad2deg(rho_in):10.4f}  "
+                    f"{'N/A':>11}  {'N/A':>10}  ⛔ no solution")
+                break
+
+            # ── branch selection ─────────────────────────────────────────
+            candidates = []
+            for r1 in rho1_sols:
+                fs = solver.solve_full_rhos_from_drive_and_rho1(rho_in, r1)
+                if fs is None:
+                    continue
+                out = fs[osi]
+
+                if predicted is not None:
+                    err = (abs(abs(out) - abs(predicted))
+                        + (0. if np.sign(out) == np.sign(predicted) else 1.))
+                elif prev_out is None:
+                    exp_sign = sigma * (1. if rho_in >= 0 else -1.)
+                    err = 0. if np.sign(out) == exp_sign else 2.
+                else:
+                    err = abs(out - prev_out)
+
+                candidates.append((err, out, fs))
+
+            if not candidates:
+                print(f"  {t:3d}  {n:4d}  ⛔ no valid candidate"); break
+
+            candidates.sort(key=lambda x: x[0])
+            best_err, out_rho, best_fs = candidates[0]
+
+            # ── flip 감지 ────────────────────────────────────────────────
+            status = "✓"
+            if abs(out_rho) > np.pi + 1e-6:
+                status = "⛔ |rho|>π"
+
+            # continuity 급변 감지 (이전 대비 변화량이 클 때)
+            if prev_out is not None:
+                delta = abs(out_rho - prev_out)
+                if delta > np.pi / 2:
+                    status = f"⚠️  FLIP Δ={np.rad2deg(delta):.1f}°"
+
+            # branch 경쟁 (두 후보의 오차 차이가 작을 때 → 불안정 구간)
+            if len(candidates) >= 2:
+                margin = candidates[1][0] - candidates[0][0]
+                if margin < 0.05:
+                    status += f"  ⚡margin={margin:.4f}"
+
+            print(f"  {t:3d}  {n:4d}  {iout:4d}  "
+                f"{np.rad2deg(rho_in):10.4f}  "
+                f"{np.rad2deg(out_rho):11.4f}  "
+                f"{best_err:10.5f}  {status}")
+
+            rho_sequence.append((t, np.rad2deg(rho_in), np.rad2deg(out_rho)))
+
+            if abs(out_rho) > np.pi + 1e-6:
+                break
+            if stop_on_flip and "FLIP" in status:
+                print(f"\n  → FLIP 감지: t={t}에서 중단")
+                break
+
+            self.rhos[t] = best_fs
+            valid += 1
+            prev_out = out_rho
+            rho_in   = out_rho
+            prev_gv  = None  # geometry는 생략 (속도)
+
+        print(f"{'='*72}\n")
+        return rho_sequence
+    
+    def _get_rho_for_crease(self, t, k):
+        """
+        unit t 의 tessellator crease k 에 해당하는 fold angle 반환.
+ 
+        rhos[t] 배열 내 인덱스 매핑:
+            Euclidean/Hyperbolic : rhos_idx = (k-1) % 4
+            Elliptic             : rhos_idx = k
+        """
+        geom = self.cells[t % self.N]["geom"]
+        idx  = k % 4 if geom == "elliptic" else (k - 1) % 4
+        return self.rhos[t][idx]
+ 
+    def get_mv_pattern(self, t, tol=1e-4):
+        """
+        unit t 의 M/V/F 패턴을 (e0, e1, e2, e3) 순서 문자열로 반환.
+        예: "MVVM"
+        """
+        out = ""
+        for k in range(4):
+            rho = self._get_rho_for_crease(t, k)
+            out += "V" if rho > tol else "M" if rho < -tol else "F"
+        return out
+    
+        
+        
+
+# =============================================================================
+#  MAIN IMPLEMENTATION
+# =============================================================================
+if __name__ == "__main__":
+
+    # Flat-foldable & helical case
+    cell_configs = [
+        {"alphas": [95, 60, 85, 120], "sigma": 1, "iout": 2},
+    ]
+ 
+    tessellator = OrigamiTesellator1D(
+        cell_configs=cell_configs,
+        num_periods=8,
+        lengths=(1.5, 1.0, 1.5),
+        scale_factor=1.0,
+    )
+    
+    B_middle = OrigamiTesellator1D(
+    cell_configs=[
+        {"alphas": [90, 90, 105, 105], "sigma": -1, "iout": 2},
+        {"alphas": [80, 80,  90,  90], "sigma": -1, "iout": 2},
+    ],
+    num_periods=6, lengths=(1.0, 1.0, 1.0),
+    )
+    
+    C_left = OrigamiTesellator1D(
+    cell_configs=[
+        {"alphas": [70, 20, 110, 160], "sigma": 1, "iout": 3},
+    ],
+    num_periods=15, lengths=(1.0, 1.0, 1.0),
+    )
+    
+    C_right = OrigamiTesellator1D(
+    cell_configs=[
+        {"alphas": [125, 40, 65, 150], "sigma": -1, "iout": 3},
+        {"alphas": [125, 40, 65, 150], "sigma":  1, "iout": 1},
+    ],
+    num_periods=1, lengths=(1.0, 1.0, 1.0),
+)
+    
+    seq = C_left.debug_kinematics(rho0_deg=-10)
+    #tessellator.plot_3d(rho0_deg=45)
+    C_right.setup_interactive_viewer()
+    C_left.export_to_mat("strip_rho45.mat", rho0_deg=-10) # due to branch sigularity flip occurs when t = 10
+    #C_right.export_to_mat("strip_rho45.mat", rho0_deg=-30)
