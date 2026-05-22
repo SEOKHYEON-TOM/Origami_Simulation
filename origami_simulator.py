@@ -440,11 +440,16 @@ class OrigamiDegree4Simulator:
         v3_test_pos = self._rodrigues_rotation_matrix(v4, r4) @ v3_flat
         v3_test_neg = self._rodrigues_rotation_matrix(v4, -r4) @ v3_flat
         
-        target_cos = np.cos(a2)
-        if abs(np.dot(v2, v3_test_pos) - target_cos) < abs(np.dot(v2, v3_test_neg) - target_cos):
+        err_pos = abs(np.dot(v2, v3_test_pos) - np.cos(a2))
+        err_neg = abs(np.dot(v2, v3_test_neg) - np.cos(a2))
+        
+        if abs(err_pos - err_neg) < 1e-6:
+            v3 = v3_test_pos if r1 >= 0 else v3_test_neg
+        elif err_pos < err_neg:
             v3 = v3_test_pos
         else:
             v3 = v3_test_neg
+            
         faces = [
             [origin, v4, v1], # Face 4
             [origin, v1, v2], # Face 1
@@ -655,7 +660,7 @@ class OrigamiDegree4Simulator:
 # --- Example ---
 if __name__ == "__main__":
     # Elliptic Case
-    sector_angles = [60-0.5, 90-0.5, 135-0.5, 75-0.5]
+    #sector_angles = [60-0.5, 90-0.5, 135-0.5, 75-0.5]
     # Hyperbolic Case
     #sector_angles = [60+0.5, 90+0.5, 135+0.5, 75+0.5]
     # Developable Case
@@ -663,14 +668,14 @@ if __name__ == "__main__":
     # Folding table
     #sector_angles = [112.5,112.5,90,135]
     # Flat-foldable
-    #sector_angles = [80, 120, 100, 60]
+    sector_angles = [70, 20, 110, 160]
     sim = OrigamiDegree4Simulator(sector_angles, contact=True)
     sim.run_simulation(resolution=1000)
     # Branch 1: input과 output 부호 동일
     result_pos = sim.compute_folding_angles_from_input_output(
         input_angle_deg=45, output_index=1, sign=1
     )
-    # Branch 2: input과 output 부호 반대 (elliptic case 경우 input_index = 0, 그외 = 3)
+    # Branch 2: input과 output 부호 반대 (elliptic case 경우, input_index = 0 그 외 = 3)
     result_neg = sim.compute_folding_angles_from_input_output(
         input_angle_deg=45, output_index=1, sign=-1, verbose=True
     )
