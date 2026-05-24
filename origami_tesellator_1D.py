@@ -276,19 +276,26 @@ class OrigamiTesellator1D:
         return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
     
     def _get_rot_from_vecs(self, u, v):
-        """ calculate rotation matrix R for rotating from u to v """
-        u = u / np.linalg.norm(u)
-        v = v / np.linalg.norm(v)
-        c = np.cross(u, v)
-        d = np.dot(u, v)
+        u  = u / np.linalg.norm(u)
+        v  = v / np.linalg.norm(v)
+        c  = np.cross(u, v)
+        d  = np.dot(u, v)
         nc = np.linalg.norm(c)
-        
+
         if nc < 1e-9:
-            return np.eye(3) if d > 0 else -np.eye(3)
-        else:
-            k = c / nc
-            theta = np.arccos(np.clip(d, -1.0, 1.0))
-            return self._rodrigues(k, theta)
+            if d > 0:
+                return np.eye(3)          # 평행: 항등 회전
+            else:
+                # ── 수정: 반평행 → 수직 축으로 180° proper rotation ──
+                # u에 수직한 축을 하나 고름
+                perp = np.array([1., 0., 0.])
+                if abs(np.dot(u, perp)) > 0.9:   # u가 X축에 가까우면 Y축 사용
+                    perp = np.array([0., 1., 0.])
+                axis = np.cross(u, perp)
+                axis = axis / np.linalg.norm(axis)
+                return self._rodrigues(axis, np.pi)   # det=+1 보장
+
+        return self._rodrigues(c / nc, np.arccos(np.clip(d, -1.0, 1.0)))
 
     def _apply_lengths_and_scale(self, local_verts, unit_index, cell_lengths, CLV):
         lv = local_verts.copy()
@@ -338,7 +345,7 @@ class OrigamiTesellator1D:
  
         # Eq. A4 (ii): c^0_{n+1} = -c^{iout}_n
         R1 = self._get_rot_from_vecs(-c0_new, ck)
-        # Eq. A4 (iii): n^0_{n+1} = n^{iout-1}_n
+        # Eq. A4 (iii): n^0_{n+1} =     n^{iout-1}_n
         R2 = self._get_rot_from_vecs(R1 @ n_new, n_prev)
  
         R = R2 @ R1
@@ -859,7 +866,175 @@ class OrigamiTesellator1D:
         return out
     
         
-        
+import scipy.io
+ 
+ 
+def export_debug_placement_mat(tessellator, filepath, rho0_deg, t_flip=10):
+    """
+    t_flip-1 (prev) 과 t_flip (curr) 에서의 placement 핵심 벡터를
+    strip 전체 geometry와 함께 .mat 파일로 내보냅니다.
+ 
+    MATLAB quiver3 로 시각화할 수 있도록 설계됨.
+ 
+    내보내는 구조
+    ─────────────
+    strip geometry:
+        vertices, faces, backbone, e1_pts, e3_pts, all_origins, meta
+ 
+    prev unit (t_flip-1, global 좌표):
+        O_prev   : 원점 (1×3)
+        ck       : c^{iout}      방향 벡터 (1×3)
+        ckm1     : c^{iout-1}    방향 벡터 (1×3)
+        n_prev   : n^{iout-1}    단위 법선 (1×3)
+ 
+    curr unit (t_flip):
+        O_curr        : 배치 후 원점     (1×3)   global
+        c0_global     : c0 (배치 후)     (1×3)   global
+        c1_global     : c1 (배치 후)     (1×3)   global
+        n_new_global  : n0 (배치 후)     (1×3)   global, 단위벡터
+ 
+    R1 정보 (회전 진단):
+        R1_from  : _get_rot_from_vecs 의 u = -c0_new (단위벡터)
+        R1_to    : _get_rot_from_vecs 의 v =  ck     (단위벡터)
+        R1_axis  : cross(u, v) / |cross|
+        R1_theta_deg : 회전 각도 (degrees)
+    """
+    valid = tessellator.compute_strip_kinematics(np.deg2rad(rho0_deg))
+    if valid <= t_flip:
+        raise ValueError(f"valid units({valid}) ≤ t_flip({t_flip}). "
+                         f"num_periods를 늘려주세요.")
+ 
+    t_prev = t_flip - 1
+ 
+    # ── strip geometry ───────────────────────────────────────────────
+    all_verts, all_faces = [], []
+    for unit_faces in tessellator.global_faces:
+        for tri in unit_faces:
+            base = len(all_verts) + 1           # MATLAB 1-indexed
+            for v in tri:
+                all_verts.append(v)
+            all_faces.append([base, base+1, base+2])
+ 
+    vertices    = np.array(all_verts, dtype=float)
+    faces       = np.array(all_faces, dtype=int)
+    all_origins = np.array([gv[0] for gv in tessellator.global_vertices])
+ 
+    res      = tessellator._build_crease_lines()
+    backbone = res[0] if res[0] is not None else np.zeros((0, 3))
+    e1_pts   = res[1] if res[1] is not None else np.zeros((0, 3))
+    e3_pts   = res[2] if res[2] is not None else np.zeros((0, 3))
+ 
+    # ── prev unit 벡터 (global) ──────────────────────────────────────
+    prev_gv   = tessellator.global_vertices[t_prev]
+    prev_cell = tessellator.cells[t_prev % tessellator.N]
+    prev_iout = prev_cell["iout"]
+    prev_CLV  = prev_cell["CLV"]
+ 
+    k_idx   = prev_CLV[prev_iout]
+    km1_idx = prev_CLV[(prev_iout - 1) % 4]
+ 
+    O_prev = prev_gv[0].copy()
+    ck     = prev_gv[k_idx]   - prev_gv[0]
+    ckm1   = prev_gv[km1_idx] - prev_gv[0]
+    n_prev = np.cross(ckm1, ck)
+    if np.linalg.norm(n_prev) > 1e-9:
+        n_prev = n_prev / np.linalg.norm(n_prev)
+ 
+    # ── curr unit 벡터 (local → apply_lengths → place_unit_global) ──
+    curr_cell   = tessellator.cells[t_flip % tessellator.N]
+    curr_CLV    = curr_cell["CLV"]
+    curr_solver = curr_cell["solver"]
+ 
+    _, lv_raw = curr_solver.get_3d_geometry(tessellator.rhos[t_flip])
+    lv = tessellator._apply_lengths_and_scale(
+        lv_raw, t_flip, curr_cell["lengths"], curr_CLV
+    )
+ 
+    # local 기준 벡터 (배치 전, 원점=[0,0,0])
+    c0_local = lv[curr_CLV[0]] - lv[0]
+    c1_local = lv[curr_CLV[1]] - lv[0]
+    n_local  = np.cross(c0_local, c1_local)
+    if np.linalg.norm(n_local) > 1e-9:
+        n_local = n_local / np.linalg.norm(n_local)
+ 
+    # global 기준 벡터 (배치 후)
+    curr_gv  = tessellator.global_vertices[t_flip]
+    O_curr   = curr_gv[0].copy()
+    c0_global = curr_gv[curr_CLV[0]] - curr_gv[0]
+    c1_global = curr_gv[curr_CLV[1]] - curr_gv[0]
+    n_global  = np.cross(c0_global, c1_global)
+    if np.linalg.norm(n_global) > 1e-9:
+        n_global = n_global / np.linalg.norm(n_global)
+ 
+    # ── R1 진단 ─────────────────────────────────────────────────────
+    # R1 = _get_rot_from_vecs(-c0_local, ck)
+    u = -c0_local / (np.linalg.norm(c0_local) + 1e-300)
+    v =  ck       / (np.linalg.norm(ck)       + 1e-300)
+ 
+    cross_uv = np.cross(u, v)
+    dot_uv   = float(np.dot(u, v))
+    nc       = np.linalg.norm(cross_uv)
+    R1_axis  = cross_uv / nc if nc > 1e-9 else np.array([0., 0., 1.])
+    R1_theta = float(np.degrees(np.arccos(np.clip(dot_uv, -1., 1.))))
+ 
+    # ── 콘솔 출력 ───────────────────────────────────────────────────
+    def _fmt(v): return np.array2string(v.round(4), separator=', ')
+ 
+    print(f"\n{'='*60}")
+    print(f"  t={t_prev} (prev)  →  t={t_flip} (curr)   [rho0={rho0_deg}°]")
+    print(f"{'─'*60}")
+    print(f"  O_prev  = {_fmt(O_prev)}")
+    print(f"  ck      = {_fmt(ck)}  ← c^{prev_iout} (output crease 방향)")
+    print(f"  ckm1    = {_fmt(ckm1)}  ← c^{prev_iout-1}")
+    print(f"  n_prev  = {_fmt(n_prev)}  ← n^{prev_iout-1} (단위)")
+    print(f"{'─'*60}")
+    print(f"  O_curr  = {_fmt(O_curr)}")
+    print(f"  c0_glb  = {_fmt(c0_global)}  ← c0 (배치 후)")
+    print(f"  c1_glb  = {_fmt(c1_global)}  ← c1 (배치 후)")
+    print(f"  n_glb   = {_fmt(n_global)}   ← n0 (단위, 배치 후)")
+    print(f"{'─'*60}")
+    print(f"  R1: {_fmt(u)}  →  {_fmt(v)}")
+    print(f"  R1 axis  = {_fmt(R1_axis)}")
+    print(f"  R1 theta = {R1_theta:.3f}°")
+    dot_n = float(np.dot(n_prev, n_global))
+    print(f"  n_prev · n_global = {dot_n:.6f}  "
+          f"({'✓ 일치' if dot_n > 0.999 else '⚠ 불일치!' if dot_n < -0.999 else '△ 부분 불일치'})")
+    print(f"{'='*60}\n")
+ 
+    # ── .mat 저장 ────────────────────────────────────────────────────
+    scipy.io.savemat(filepath, {
+        # strip geometry
+        "vertices":    vertices,
+        "faces":       faces,
+        "backbone":    backbone,
+        "e1_pts":      e1_pts,
+        "e3_pts":      e3_pts,
+        "all_origins": all_origins,
+        "meta": {
+            "rho0_deg":    float(rho0_deg),
+            "valid_units": float(valid),
+            "total_units": float(tessellator.total_units),
+            "N_period":    float(tessellator.N),
+            "t_flip":      float(t_flip),
+            "t_prev":      float(t_prev),
+        },
+        # prev unit vectors (global)
+        "O_prev":   O_prev.reshape(1, 3),
+        "ck":       ck.reshape(1, 3),
+        "ckm1":     ckm1.reshape(1, 3),
+        "n_prev":   n_prev.reshape(1, 3),
+        # curr unit vectors (global, after placement)
+        "O_curr":       O_curr.reshape(1, 3),
+        "c0_global":    c0_global.reshape(1, 3),
+        "c1_global":    c1_global.reshape(1, 3),
+        "n_new_global": n_global.reshape(1, 3),
+        # R1 diagnostics
+        "R1_from":      u.reshape(1, 3),
+        "R1_to":        v.reshape(1, 3),
+        "R1_axis":      R1_axis.reshape(1, 3),
+        "R1_theta_deg": np.array([[R1_theta]]),
+    })
+    print(f"[저장 완료] {filepath}\n")
 
 # =============================================================================
 #  MAIN IMPLEMENTATION
@@ -867,24 +1042,24 @@ class OrigamiTesellator1D:
 if __name__ == "__main__":
 
     # Flat-foldable & helical case
-    cell_configs = [
-        {"alphas": [95, 60, 85, 120], "sigma": 1, "iout": 2},
-    ]
+    # cell_configs = [
+    #     {"alphas": [95, 60, 85, 120], "sigma": 1, "iout": 2},
+    # ]
  
-    tessellator = OrigamiTesellator1D(
-        cell_configs=cell_configs,
-        num_periods=8,
-        lengths=(1.5, 1.0, 1.5),
-        scale_factor=1.0,
-    )
+    # tessellator = OrigamiTesellator1D(
+    #     cell_configs=cell_configs,
+    #     num_periods=8,
+    #     lengths=(1.5, 1.0, 1.5),
+    #     scale_factor=1.0,
+    # )
     
-    B_middle = OrigamiTesellator1D(
-    cell_configs=[
-        {"alphas": [90, 90, 105, 105], "sigma": -1, "iout": 2},
-        {"alphas": [80, 80,  90,  90], "sigma": -1, "iout": 2},
-    ],
-    num_periods=6, lengths=(1.0, 1.0, 1.0),
-    )
+    # B_middle = OrigamiTesellator1D(
+    # cell_configs=[
+    #     {"alphas": [90, 90, 105, 105], "sigma": -1, "iout": 2},
+    #     {"alphas": [80, 80,  90,  90], "sigma": -1, "iout": 2},
+    # ],
+    # num_periods=6, lengths=(1.0, 1.0, 1.0),
+    # )
     
     C_left = OrigamiTesellator1D(
     cell_configs=[
@@ -893,16 +1068,18 @@ if __name__ == "__main__":
     num_periods=15, lengths=(1.0, 1.0, 1.0),
     )
     
-    C_right = OrigamiTesellator1D(
-    cell_configs=[
-        {"alphas": [125, 40, 65, 150], "sigma": -1, "iout": 3},
-        {"alphas": [125, 40, 65, 150], "sigma":  1, "iout": 1},
-    ],
-    num_periods=1, lengths=(1.0, 1.0, 1.0),
-)
+#     C_right = OrigamiTesellator1D(
+#     cell_configs=[
+#         {"alphas": [125, 40, 65, 150], "sigma": -1, "iout": 3},
+#         {"alphas": [125, 40, 65, 150], "sigma":  1, "iout": 1},
+#     ],
+#     num_periods=1, lengths=(1.0, 1.0, 1.0),
+# )
     
-    seq = C_left.debug_kinematics(rho0_deg=-10)
+    #seq = C_left.debug_kinematics(rho0_deg=-140)
     #tessellator.plot_3d(rho0_deg=45)
-    C_right.setup_interactive_viewer()
-    C_left.export_to_mat("strip_rho45.mat", rho0_deg=-10) # due to branch sigularity flip occurs when t = 10
+    C_left.setup_interactive_viewer()
+    C_left.export_to_mat("strip_rho45.mat", rho0_deg=-140) # due to branch sigularity flip occurs when t = 10
     #C_right.export_to_mat("strip_rho45.mat", rho0_deg=-30)
+
+    #export_debug_placement_mat(C_left, "strip_debug.mat", rho0_deg=-140, t_flip=9)
