@@ -284,16 +284,16 @@ class OrigamiTesellator1D:
 
         if nc < 1e-9:
             if d > 0:
-                return np.eye(3)          # 평행: 항등 회전
+                return np.eye(3)          # parallel & same dir: identity
             else:
-                # ── 수정: 반평행 → 수직 축으로 180° proper rotation ──
-                # u에 수직한 축을 하나 고름
+                # ── parallel & opposite dir → 180° proper rotation w.r.t. normal axis──
+                # choose axis perpendicular to u
                 perp = np.array([1., 0., 0.])
-                if abs(np.dot(u, perp)) > 0.9:   # u가 X축에 가까우면 Y축 사용
+                if abs(np.dot(u, perp)) > 0.9:   # if u closer to x-axis, use y-axis instead
                     perp = np.array([0., 1., 0.])
                 axis = np.cross(u, perp)
                 axis = axis / np.linalg.norm(axis)
-                return self._rodrigues(axis, np.pi)   # det=+1 보장
+                return self._rodrigues(axis, np.pi)   # det=+1 guarantee
 
         return self._rodrigues(c / nc, np.arccos(np.clip(d, -1.0, 1.0)))
 
@@ -1053,14 +1053,6 @@ if __name__ == "__main__":
     #     scale_factor=1.0,
     # )
     
-    # B_middle = OrigamiTesellator1D(
-    # cell_configs=[
-    #     {"alphas": [90, 90, 105, 105], "sigma": -1, "iout": 2},
-    #     {"alphas": [80, 80,  90,  90], "sigma": -1, "iout": 2},
-    # ],
-    # num_periods=6, lengths=(1.0, 1.0, 1.0),
-    # )
-    
     C_left = OrigamiTesellator1D(
     cell_configs=[
         {"alphas": [70, 20, 110, 160], "sigma": 1, "iout": 3},
@@ -1068,18 +1060,17 @@ if __name__ == "__main__":
     num_periods=15, lengths=(1.0, 1.0, 1.0),
     )
     
-#     C_right = OrigamiTesellator1D(
-#     cell_configs=[
-#         {"alphas": [125, 40, 65, 150], "sigma": -1, "iout": 3},
-#         {"alphas": [125, 40, 65, 150], "sigma":  1, "iout": 1},
-#     ],
-#     num_periods=1, lengths=(1.0, 1.0, 1.0),
-# )
+    flat_foldable_helix = OrigamiTesellator1D(
+    cell_configs=[
+        {"alphas": [70, 60, 110, 120], "sigma": 1, "iout": 2},
+    ],
+    num_periods=15, lengths=(0.8, 1.5, 0.8),
+    )
     
     #seq = C_left.debug_kinematics(rho0_deg=-140)
-    #tessellator.plot_3d(rho0_deg=45)
-    C_left.setup_interactive_viewer()
-    C_left.export_to_mat("strip_rho45.mat", rho0_deg=-140) # due to branch sigularity flip occurs when t = 10
-    #C_right.export_to_mat("strip_rho45.mat", rho0_deg=-30)
-
-    #export_debug_placement_mat(C_left, "strip_debug.mat", rho0_deg=-140, t_flip=9)
+    #C_left.plot_3d(rho0_deg=45)
+    flat_foldable_helix.plot_3d(rho0_deg=20)
+    flat_foldable_helix.setup_interactive_viewer()
+    #C_left.setup_interactive_viewer()
+    flat_foldable_helix.export_to_mat("strip_rho45.mat", rho0_deg=45)
+    #export_debug_placement_mat(C_left, "strip_debug.mat", rho0_deg=-140, t_flip=14)
