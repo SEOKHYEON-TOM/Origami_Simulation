@@ -327,7 +327,7 @@ class OrigamiDegree4Simulator:
         d_idx = self.driving_crease - 1
         other_indices = [i for i in range(4) if i != d_idx]
         labels = [r'$\rho_2$', r'$\rho_3$', r'$\rho_4$']
-        colors = ['blue', 'green', 'red'] # (rho2: ?뚮옉, rho3: 珥덈줉, rho4: 鍮④컯)
+        colors = ['blue', 'green', 'red']
         
         if self.contact:
             # --- [Case 1] Contact = True ---
@@ -352,6 +352,14 @@ class OrigamiDegree4Simulator:
         ax.set_xlim([-np.pi, np.pi])
         ax.set_ylim([-np.pi, np.pi])
         ax.set_aspect('equal')
+        
+        pi_ticks = [-np.pi, -np.pi/2, 0, np.pi/2, np.pi]
+        pi_tick_labels = [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$']      
+        ax.set_xticks(pi_ticks)
+        ax.set_xticklabels(pi_tick_labels)
+        ax.set_yticks(pi_ticks)
+        ax.set_yticklabels(pi_tick_labels)
+        
         ax.axhline(0, color='black', linewidth=1)
         ax.axvline(0, color='black', linewidth=1)
         ax.grid(True, linestyle='--', alpha = 0.6)
@@ -660,16 +668,16 @@ class OrigamiDegree4Simulator:
 # --- Example ---
 if __name__ == "__main__":
     # Elliptic Case
-    #sector_angles = [60-0.5, 90-0.5, 135-0.5, 75-0.5]
+    sector_angles = [59, 89, 134, 74]
     # Hyperbolic Case
-    #sector_angles = [60+0.5, 90+0.5, 135+0.5, 75+0.5]
+    #sector_angles = [61, 91, 136, 76]
     # Developable Case
-    #sector_angles = [60, 90, 75, 135]
+    #sector_angles = [60, 90, 135, 75]
     # Folding table
     #sector_angles = [112.5,112.5,90,135]
     # Flat-foldable
-    sector_angles = [70, 20, 110, 160]
-    sim = OrigamiDegree4Simulator(sector_angles, contact=True)
+    #sector_angles = [70, 20, 110, 160]
+    sim = OrigamiDegree4Simulator(sector_angles, contact=False)
     sim.run_simulation(resolution=1000)
     # Branch 1: input과 output 부호 동일
     result_pos = sim.compute_folding_angles_from_input_output(
