@@ -668,7 +668,7 @@ class OrigamiDegree4Simulator:
 # --- Example ---
 if __name__ == "__main__":
     # Elliptic Case
-    sector_angles = [59, 89, 134, 74]
+    #sector_angles = [80, 60, 100, 40]
     # Hyperbolic Case
     #sector_angles = [61, 91, 136, 76]
     # Developable Case
@@ -676,7 +676,7 @@ if __name__ == "__main__":
     # Folding table
     #sector_angles = [112.5,112.5,90,135]
     # Flat-foldable
-    #sector_angles = [70, 20, 110, 160]
+    sector_angles = [70, 70, 120, 110]
     sim = OrigamiDegree4Simulator(sector_angles, contact=False)
     sim.run_simulation(resolution=1000)
     # Branch 1: input과 output 부호 동일

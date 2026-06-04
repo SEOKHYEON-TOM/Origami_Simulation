@@ -2,6 +2,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from scipy.interpolate import interp1d
 
 from origami_simulator import OrigamiDegree4Simulator
 
@@ -87,12 +88,14 @@ class OrigamiTesellator1D:
         
         # 2. Global parameter
         self.N            = len(cell_configs)
+        self.cell_configs = cell_configs
         self.num_periods  = int(num_periods)
         self.total_units  = self.N * self.num_periods
         self.num_units    = self.total_units
         self.scale_factor = float(scale_factor)
         self.contact      = contact
         self.verbose      = verbose
+        self.lengths      = lengths
         
         # 3. Global Lengths Regularization
         _lengths_0 = lengths[0]
@@ -659,6 +662,136 @@ class OrigamiTesellator1D:
         update()
         plt.show()
         
+    
+    
+    def plot_cobweb(self, rho0_deg, ax=None, color='orange'):
+        """
+        Track the Cobweb along tesellations, arrow & 'Blocked' mark when angle over 180 or path is shorted
+            
+        Branch selection criterion (assume universal for all degree-4 vertices):
+        - sgn(ρ⁰)·sgn(ρ²) == sigma
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 8))
+            
+        interp_funcs = []
+        colors_bg = ['steelblue', 'seagreen', 'indianred', 'mediumpurple']
+        
+        _GEOM_SHORT = {"euclidean": "Euc", "elliptic": "Ell", "hyperbolic": "Hyp"}
+        
+        for idx, config in enumerate(self.cell_configs):
+            parsed = self._init_cell(config, self.lengths)
+            
+            sim = parsed["solver"]
+            sigma = parsed["sigma"]
+            iout = parsed["iout"]
+            CLV = parsed["CLV"]
+            mapped_out = parsed["output_solver_idx"]
+            is_flat_foldable = parsed["is_flat_foldable"]
+            geom = parsed["geom"]
+            
+            if len(sim.branch1) == 0 and len(sim.branch2) == 0:
+                sim.run_simulation(resolution=1000)
+
+            mapped_in = CLV[0] - 1
+            rho2_idx  = CLV[2] - 1
+            
+            valid_x, valid_y = [], []
+            
+            for branch in [sim.branch1, sim.branch2]:
+                if len(branch) == 0:
+                    continue
+                for row in branch:
+                    x      = row[mapped_in]   # input crease angle
+                    y      = row[mapped_out]  # output crease angle
+                    rho2   = row[rho2_idx]    # opposite crease (branch)
+
+                    if abs(x) < 1e-4 or abs(rho2) < 1e-4:
+                        valid_x.append(x); valid_y.append(y)
+                    elif np.sign(x) * np.sign(rho2) == sigma:
+                        valid_x.append(x); valid_y.append(y)
+
+            valid_x = np.array(valid_x)
+            valid_y = np.array(valid_y)
+
+            if len(valid_x) > 0:
+                sort_idx = np.argsort(valid_x)
+                x_sorted, y_sorted = valid_x[sort_idx], valid_y[sort_idx]
+                unique_x, unique_indices = np.unique(x_sorted, return_index=True)
+                unique_y = y_sorted[unique_indices]
+                f_interp = interp1d(unique_x, unique_y, bounds_error=False, fill_value=np.nan)
+            else:
+                f_interp  = lambda x: np.nan
+                unique_x  = np.array([])
+                unique_y  = np.array([])
+
+            interp_funcs.append(f_interp)
+
+            c_bg = colors_bg[idx % len(colors_bg)]
+            geom_tag = _GEOM_SHORT.get(geom, "?")
+            ff_label = '✓FF' if is_flat_foldable else 'nFF'
+            ax.plot(
+                unique_x, unique_y,
+                color=c_bg, lw=2, alpha=0.7,
+                label=r'Config %d  $\sigma=%+d$  $e_{out}=%d$  [%s/%s]'
+                  % (idx, sigma, iout, geom_tag, ff_label)
+            )
+
+        ax.plot([-np.pi, np.pi], [-np.pi, np.pi], 'k--', lw=1.2, alpha=0.5, label='y = x')
+        
+        # --- 2. Tracking Cobweb path ---
+        rho_curr = np.radians(rho0_deg)
+        for i in range(self.total_units):
+            config_idx = i % len(self.cell_configs)
+            f_interp = interp_funcs[config_idx]
+
+            rho_next = f_interp(rho_curr)
+
+            # [조건 검사] 운동학적 단절(NaN) 또는 물리적 한계(180도) 도달 여부
+            if np.isnan(rho_next) or abs(rho_next) >= np.pi - 1e-5:
+                # 넘어갔다면 플롯 범위를 위해 +-pi 로 클리핑 처리
+                if not np.isnan(rho_next):
+                    rho_next_clipped = np.sign(rho_next) * np.pi
+                else:
+                    rho_next_clipped = rho_curr  # stop when NaN
+                
+                ax.plot([rho_curr, rho_curr], [rho_curr, rho_next_clipped], color=color, lw=1.5, alpha=0.9)
+                ax.annotate('Blocked', 
+                            xy=(rho_curr, rho_next_clipped), 
+                            xytext=(rho_curr + 0.2, rho_next_clipped - np.sign(rho_next_clipped) * 0.3),
+                            arrowprops=dict(facecolor='red', edgecolor='red', shrink=0.0, width=1.5, headwidth=7),
+                            color='red', fontsize=11, fontweight='bold', zorder=10)
+                break 
+
+            # vertical -> horizontal
+            ax.plot([rho_curr, rho_curr], [rho_curr, rho_next], color=color, lw=1.5, alpha=0.9)
+            ax.plot([rho_curr, rho_next], [rho_next, rho_next], color=color, lw=1.5, alpha=0.9)
+            rho_curr = float(rho_next)
+
+        # --- 축 서식 ---
+        ax.set_xlabel(r'$\rho_i$ [rad]', fontsize=10)
+        ax.set_ylabel(r'$\rho_{i+1}$ [rad]', fontsize=10)
+        ax.set_xlim([-np.pi, np.pi])
+        ax.set_ylim([-np.pi, np.pi])
+        ax.set_aspect('equal')
+        
+        pi_ticks = [-np.pi, -np.pi/2, 0, np.pi/2, np.pi]
+        pi_tick_labels = [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$']
+        ax.set_xticks(pi_ticks)
+        ax.set_xticklabels(pi_tick_labels)
+        ax.set_yticks(pi_ticks)
+        ax.set_yticklabels(pi_tick_labels)
+
+        ax.axhline(0, color='black', linewidth=1)
+        ax.axvline(0, color='black', linewidth=1)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        
+        handles, labels = ax.get_legend_handles_labels()
+        unique = dict(zip(labels, handles))
+        ax.legend(unique.values(), unique.keys(), loc='best', fontsize='small')
+
+        return ax
+        
     # =========================================================================
     #  File convert
     # =========================================================================
@@ -721,29 +854,165 @@ class OrigamiTesellator1D:
         
     def debug_kinematics(self, rho0_deg, stop_on_flip=True):
         """
-        각 step의 rho값, branch selection 오차, geometry 이상 여부를 출력.
+        [Part 1] Per-cell admissible range analysis  (branch filter = same as plot_cobweb, opposite crease sign)
+        [Part 2] Step-by-step kinematic trace
 
         Parameters
         ----------
-        rho0_deg     : float  입력각 (degrees)
+        rho0_deg     : float  input angle (degrees)
         stop_on_flip : bool   flip 감지 시 즉시 중단
+        
+        Returns
+        -------
+        rho_sequence : list[(t, rho_in_deg, rho_out_deg)]
         """
-        rho_in   = np.deg2rad(rho0_deg)
-        prev_out = None
-        prev_gv  = None
-        valid    = 0
+        _GEOM_SHORT = {"euclidean": "Euc", "elliptic": "Ell", "hyperbolic": "Hyp"}
+        
+        # =========================================================================
+        # Part 1: Per-cell Admissible Range Analysis
+        # =========================================================================
+        
+        print(f"\n  {'─'*68}")
+        print(f"  [Part 1]  Admissible Range per Cell Config")
+        print(f"  {'─'*68}")
 
-        print(f"\n{'='*72}")
-        print(f"  debug_kinematics  |  rho0={rho0_deg}°  |  "
-            f"N={self.N}  periods={self.num_periods}")
-        print(f"{'─'*72}")
+        for idx, cell in enumerate(self.cells):
+            sim              = cell["solver"]
+            sigma            = cell["sigma"]
+            iout             = cell["iout"]
+            CLV              = cell["CLV"]
+            mapped_out       = cell["output_solver_idx"]
+            is_flat_foldable = cell["is_flat_foldable"]
+            geom             = cell["geom"]
+            alphas_deg       = cell["alphas_deg"]
+            alphas           = cell["alphas"]          # radians
+
+            # simulation data 없을 때 생성
+            if len(sim.branch1) == 0 and len(sim.branch2) == 0:
+                sim.run_simulation(resolution=1000)
+
+            mapped_in = CLV[0] - 1   # rho0 (input crease)
+            rho2_idx  = CLV[2] - 1   # rho2 (output crease, branch selection)
+
+            # ── Branch filter: sgn(ρ⁰)·sgn(ρ²) == σ ──────
+            valid_x, valid_y = [], []
+            for branch in [sim.branch1, sim.branch2]:
+                if len(branch) == 0:
+                    continue
+                for row in branch:
+                    x    = row[mapped_in]
+                    y    = row[mapped_out]
+                    rho2 = row[rho2_idx]
+                    if abs(x) < 1e-4 or abs(rho2) < 1e-4:
+                        valid_x.append(x); valid_y.append(y)
+                    elif np.sign(x) * np.sign(rho2) == sigma:
+                        valid_x.append(x); valid_y.append(y)
+
+            valid_x = np.array(valid_x)
+            valid_y = np.array(valid_y)
+
+            # ── Header ────────────────────────────────────────────────────────
+            geom_tag = _GEOM_SHORT.get(geom, "?")
+            ff_tag   = "FF" if is_flat_foldable else "nFF"
+            print(f"\n  ┌─ Cell {idx}  [{geom_tag}/{ff_tag}]  σ={sigma:+d}  iout={iout}")
+            print(f"  │  alphas = {alphas_deg.astype(int).tolist()} deg")
+            print(f"  │  Branch pts : branch1={len(sim.branch1)},  branch2={len(sim.branch2)}")
+            print(f"  │  Valid (σ-filter) : {len(valid_x)}")
+
+            if len(valid_x) == 0:
+                print(f"  │ No admissible points")
+                print(f"  └{'─'*64}")
+                continue
+
+            x_min, x_max = float(valid_x.min()), float(valid_x.max())
+            y_min, y_max = float(valid_y.min()), float(valid_y.max())
+
+            # ── Overall range ─────────────────────────────────────────────────
+            print(f"  │")
+            print(f"  │  ρ⁰  (input)  ∈ [{x_min:+.4f}, {x_max:+.4f}] rad"
+                f"  = [{np.degrees(x_min):+7.2f}°, {np.degrees(x_max):+7.2f}°]")
+            print(f"  │  ρ{iout}  (output) ∈ [{y_min:+.4f}, {y_max:+.4f}] rad"
+                f"  = [{np.degrees(y_min):+7.2f}°, {np.degrees(y_max):+7.2f}°]")
+
+            # ── Positive / Negative branch ─────────────────────────────────────
+            pos_mask = valid_x >  1e-4
+            neg_mask = valid_x < -1e-4
+            print(f"  │")
+            for mask, label in [(pos_mask, f"ρ⁰ > 0"), (neg_mask, f"ρ⁰ < 0")]:
+                if mask.sum() > 0:
+                    xb, yb = valid_x[mask], valid_y[mask]
+                    print(f"  │  ┃ {label}  ({mask.sum():4d} pts)  "
+                        f"ρ⁰ ∈ [{np.degrees(xb.min()):+6.1f}°, {np.degrees(xb.max()):+6.1f}°]  "
+                        f"ρ{iout} ∈ [{np.degrees(yb.min()):+6.1f}°, {np.degrees(yb.max()):+6.1f}°]")
+                else:
+                    print(f"  │  ┃ {label}: ∅")
+
+            # ── Endpoint reachability ──────────────────────────────────────────
+            eps            = 0.05   # ≈ 2.9°
+            reach_dev      = bool(np.any(np.abs(valid_x) < eps))
+            reach_flat_in  = bool(np.any(np.abs(np.abs(valid_x) - np.pi) < eps))
+            reach_flat_out = bool(np.any(np.abs(np.abs(valid_y) - np.pi) < eps))
+            print(f"  │")
+            print(f"  │  Endpoints (tol ≈ {np.degrees(eps):.0f}°) :"
+                f"  ρ⁰=0 {'✓' if reach_dev else '✗'}"
+                f"   ρ⁰=±π {'✓' if reach_flat_in else '✗'}"
+                f"   ρ{iout}=±π {'✓' if reach_flat_out else '✗'}")
+
+            # ── Configuration space gap ────────────────────────────────────────
+            if len(valid_x) > 2:
+                xs   = np.sort(valid_x)
+                dxs  = np.diff(xs)
+                maxg = float(dxs.max())
+                if maxg > 0.3:
+                    gi = int(dxs.argmax())
+                    print(f"  │  ⚠ Disconnected: gap at ρ⁰ ∈ ({xs[gi]:+.3f}, {xs[gi+1]:+.3f})"
+                        f"  width = {np.degrees(maxg):.2f}°")
+
+            # ── Slope at ρ⁰=0  (numerical + theoretical for FF adjacent) ────────
+            nz_mask = (np.abs(valid_x) < 0.3) & (np.abs(valid_x) > 1e-4)
+            if nz_mask.sum() >= 2:
+                xz, yz = valid_x[nz_mask], valid_y[nz_mask]
+                so     = np.argsort(xz)
+                slope  = float(np.polyfit(xz[so], yz[so], 1)[0])
+                stab   = "stable  (|f'|<1)" if abs(slope) < 1.0 else "unstable(|f'|≥1)"
+                print(f"  │")
+                print(f"  │  f'(0) numerical  = {slope:+.4f}  [{stab}]")
+
+                # Imada 2026 Eq.(2): p = -sgn(cosθ⁰+σcosθ¹)·√((A-B)/(A+B))
+                if is_flat_foldable and iout in (1, 3):
+                    th0, th1 = alphas[0], alphas[1]
+                    A_c = np.cos(th0) * np.cos(th1) + sigma
+                    B_c = np.sin(th0) * np.sin(th1)
+                    ratio = (A_c - B_c) / (A_c + B_c + 1e-300)
+                    if ratio >= 0 and (A_c + B_c) > 1e-9:
+                        p_abs    = np.sqrt(ratio)
+                        sign_fac = np.sign(np.cos(th0) + sigma * np.cos(th1))
+                        p_theory = -sign_fac * p_abs
+                        width    = abs(2 * np.log(np.tan(np.pi / 20))
+                                    / np.log(abs(p_theory) + 1e-300))
+                        print(f"  │  f'(0) theory     = {p_theory:+.4f}"
+                            f"  [p, Imada2026 Eq.2  A={A_c:.4f} B={B_c:.4f}]")
+                        print(f"  │  Transition width ≈ {width:.1f} cells  (10–90% sigmoid)")
+                    else:
+                        print(f"  │  f'(0) theory  : (A-B)/(A+B) < 0 → complex p (non-sigmoid)")
+
+            print(f"  └{'─'*64}")
+
+        # =========================================================================
+        # Part 2: Step-by-step kinematic trace  (original logic unchanged)
+        # =========================================================================
+        print(f"\n  {'─'*68}")
+        print(f"  [Part 2]  Step-by-step Kinematic Trace  (rho0 = {rho0_deg}°)")
+        print(f"  {'─'*68}")
         print(f"  {'t':>3}  {'cell':>4}  {'iout':>4}  "
             f"{'rho_in(°)':>10}  {'rho_out(°)':>11}  "
             f"{'branch_err':>10}  {'status'}")
         print(f"  {'─'*3}  {'─'*4}  {'─'*4}  "
             f"{'─'*10}  {'─'*11}  {'─'*10}  {'─'*20}")
 
-        rho_sequence = []   # (t, rho_in_deg, rho_out_deg) 기록
+        rho_in       = np.deg2rad(rho0_deg)
+        prev_out     = None
+        rho_sequence = []
 
         for t in range(self.total_units):
             n    = t % self.N
@@ -754,38 +1023,35 @@ class OrigamiTesellator1D:
             sigma  = cell["sigma"]
             iout   = cell["iout"]
             osi    = cell["output_solver_idx"]
-            CLV    = cell["CLV"]
-            prev_cell = self.cells[(t-1) % self.N] if t > 0 else None
 
-            # ── oracle 계산 ──────────────────────────────────────────────
+            # ── oracle ────────────────────────────────────────────────────────
             if iout == 2 and A is not None:
                 cos_next = A * np.cos(rho_in) + B
                 if abs(cos_next) > 1.0:
                     print(f"  {t:3d}  {n:4d}  {iout:4d}  "
                         f"{np.rad2deg(rho_in):10.4f}  "
-                        f"{'N/A':>11}  {'N/A':>10}  ⛔ self-blocking")
+                        f"{'N/A':>11}  {'N/A':>10}  self-blocking")
                     break
                 predicted = (sigma * (1. if rho_in >= 0 else -1.)
                             * np.arccos(np.clip(cos_next, -1., 1.)))
             else:
                 predicted = None
 
-            # ── quadratic solve ──────────────────────────────────────────
+            # ── quadratic solve ───────────────────────────────────────────────
             rho1_sols = solver._solve_quadratic_rho1(rho_in)
             if not rho1_sols:
                 print(f"  {t:3d}  {n:4d}  {iout:4d}  "
                     f"{np.rad2deg(rho_in):10.4f}  "
-                    f"{'N/A':>11}  {'N/A':>10}  ⛔ no solution")
+                    f"{'N/A':>11}  {'N/A':>10}  no solution")
                 break
 
-            # ── branch selection ─────────────────────────────────────────
+            # ── branch selection ──────────────────────────────────────────────
             candidates = []
             for r1 in rho1_sols:
                 fs = solver.solve_full_rhos_from_drive_and_rho1(rho_in, r1)
                 if fs is None:
                     continue
                 out = fs[osi]
-
                 if predicted is not None:
                     err = (abs(abs(out) - abs(predicted))
                         + (0. if np.sign(out) == np.sign(predicted) else 1.))
@@ -794,31 +1060,24 @@ class OrigamiTesellator1D:
                     err = 0. if np.sign(out) == exp_sign else 2.
                 else:
                     err = abs(out - prev_out)
-
                 candidates.append((err, out, fs))
 
             if not candidates:
-                print(f"  {t:3d}  {n:4d}  ⛔ no valid candidate"); break
+                print(f"  {t:3d}  {n:4d}  no valid candidate"); break
 
             candidates.sort(key=lambda x: x[0])
             best_err, out_rho, best_fs = candidates[0]
 
-            # ── flip 감지 ────────────────────────────────────────────────
+            # ── status flags ──────────────────────────────────────────────────
             status = "✓"
             if abs(out_rho) > np.pi + 1e-6:
-                status = "⛔ |rho|>π"
-
-            # continuity 급변 감지 (이전 대비 변화량이 클 때)
-            if prev_out is not None:
-                delta = abs(out_rho - prev_out)
-                if delta > np.pi / 2:
-                    status = f"⚠️  FLIP Δ={np.rad2deg(delta):.1f}°"
-
-            # branch 경쟁 (두 후보의 오차 차이가 작을 때 → 불안정 구간)
+                status = "|rho|>π"
+            if prev_out is not None and abs(out_rho - prev_out) > np.pi / 2:
+                status = f"  FLIP Δ={np.rad2deg(abs(out_rho - prev_out)):.1f}°"
             if len(candidates) >= 2:
                 margin = candidates[1][0] - candidates[0][0]
                 if margin < 0.05:
-                    status += f"  ⚡margin={margin:.4f}"
+                    status += f"  margin={margin:.4f}"
 
             print(f"  {t:3d}  {n:4d}  {iout:4d}  "
                 f"{np.rad2deg(rho_in):10.4f}  "
@@ -834,19 +1093,17 @@ class OrigamiTesellator1D:
                 break
 
             self.rhos[t] = best_fs
-            valid += 1
             prev_out = out_rho
             rho_in   = out_rho
-            prev_gv  = None  # geometry는 생략 (속도)
 
-        print(f"{'='*72}\n")
+        print(f"\n{'='*72}\n")
         return rho_sequence
     
     def _get_rho_for_crease(self, t, k):
         """
-        unit t 의 tessellator crease k 에 해당하는 fold angle 반환.
+        At unit t, return tessellator crease k fold angle.
  
-        rhos[t] 배열 내 인덱스 매핑:
+        index mapping in rhos[t]:
             Euclidean/Hyperbolic : rhos_idx = (k-1) % 4
             Elliptic             : rhos_idx = k
         """
@@ -857,7 +1114,7 @@ class OrigamiTesellator1D:
     def get_mv_pattern(self, t, tol=1e-4):
         """
         unit t 의 M/V/F 패턴을 (e0, e1, e2, e3) 순서 문자열로 반환.
-        예: "MVVM"
+        ex: "MVVM"
         """
         out = ""
         for k in range(4):
@@ -1055,22 +1312,26 @@ if __name__ == "__main__":
     
     C_left = OrigamiTesellator1D(
     cell_configs=[
-        {"alphas": [70, 20, 110, 160], "sigma": 1, "iout": 3},
+        {"alphas": [70, 70, 120, 110], "sigma": 1, "iout": 3},
     ],
-    num_periods=15, lengths=(1.0, 1.0, 1.0),
+    num_periods=2, lengths=(1.0, 1.0, 1.0),
     )
     
     flat_foldable_helix = OrigamiTesellator1D(
     cell_configs=[
         {"alphas": [70, 60, 110, 120], "sigma": 1, "iout": 2},
     ],
-    num_periods=15, lengths=(0.8, 1.5, 0.8),
+    num_periods=1, lengths=(0.8, 1.5, 0.8),
     )
     
-    #seq = C_left.debug_kinematics(rho0_deg=-140)
-    #C_left.plot_3d(rho0_deg=45)
-    flat_foldable_helix.plot_3d(rho0_deg=20)
-    flat_foldable_helix.setup_interactive_viewer()
+    C_left.plot_cobweb(rho0_deg=-20)
+    plt.title("1D Strip Tessellation Propagation")
+    plt.show()
+    
+    seq = C_left.debug_kinematics(rho0_deg=-20)
+    #C_left.plot_3d(rho0_deg=-30)
+    #flat_foldable_helix.plot_3d(rho0_deg=20)
+    #flat_foldable_helix.setup_interactive_viewer()
     #C_left.setup_interactive_viewer()
-    flat_foldable_helix.export_to_mat("strip_rho45.mat", rho0_deg=45)
-    #export_debug_placement_mat(C_left, "strip_debug.mat", rho0_deg=-140, t_flip=14)
+    #C_left.export_to_mat("strip_rho45.mat", rho0_deg=120)
+    export_debug_placement_mat(C_left, "strip_debug.mat", rho0_deg=-20, t_flip=1)
