@@ -418,3 +418,24 @@ def plot_ne_tube_convergence(result, rho0_start_deg, num_cells=40, window=8,
         "r_vals": np.array(r_vals),
         "g_vals": np.array(g_vals),
     }
+
+
+if __name__ == "__main__":
+    TARGET_N = 4
+    R_TARGET = 2.0
+    G_TARGET = 0.3
+
+    print("=" * 60)
+    print("FF tube design search")
+    print("=" * 60)
+    ff_result = find_ff_tube_design(TARGET_N, R_TARGET, G_TARGET)
+    plot_ff_tube_transition(ff_result, save_path="ff_tube_transition.png")
+
+    print("=" * 60)
+    print("NE tube design search")
+    print("=" * 60)
+    ne_result = find_ne_tube_design(TARGET_N, R_TARGET, G_TARGET)
+    plot_ne_tube_convergence(
+        ne_result, rho0_start_deg=ne_result["rho_star_deg"] - 20.0,
+        num_cells=40, save_path="ne_tube_convergence.png",
+    )
