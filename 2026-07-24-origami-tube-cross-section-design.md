@@ -91,11 +91,14 @@ def period_omega(tessellator, idx0: int = 0, idx1: int = 1) -> float | None:
     기본값(idx0=0, idx1=1)은 self.N=1(단일 cell type) 가정 하의 "한 period".
     NE 수렴 검증(4.3)에서는 임의의 (t-1, t) 쌍으로 그대로 호출한다.
 
-    unit t의 프레임 = get_se3_frame(origin, c0, c1, rho_e0, is_base=True)
-        origin = global_vertices[t][0]
-        c0     = global_vertices[t][CLV[0]] - origin
-        c1     = global_vertices[t][CLV[1]] - origin
-        rho_e0 = tessellator._get_rho_for_crease(t, 0)
+    unit t의 프레임 = get_se3_frame(origin, c0, c1, rho_val, is_base=True)
+        origin  = global_vertices[t][0]
+        c0      = global_vertices[t][CLV[0]] - origin
+        c1      = global_vertices[t][CLV[1]] - origin
+        rho_val = tessellator.rhos[t][0]
+        (origami_forward_kinematics.extract_relative_se3의 is_base=True
+         분기와 정확히 동일한 컨벤션 — CLV/rho 인덱스 매핑을 새로 해석하지
+         않고 기존 검증된 코드의 패턴을 모든 unit에 균일하게 재사용한다.)
 
     R_rel = R_idx0.T @ R_idx1  ->  rotation_angle_from_matrix(R_rel)
     valid <= max(idx0,idx1) 이면 None 반환.
