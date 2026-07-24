@@ -149,3 +149,64 @@ def find_ff_tube_design(target_N, r_target, g_target, w_omega=3.0,
         print(f"  residual={best_val:.6f}")
 
     return result
+
+
+def plot_ff_tube_transition(result, save_path=None, n_points=60):
+    """
+    Sweep rho0 across (5, 175) deg for the alphas found by
+    find_ff_tube_design, plotting omega(rho0), r(rho0), g(rho0).
+    Expected: g -> 0 near both ends (flat/flat-folded, zero torsion),
+    while omega crosses the target value near result["rho0_deg"].
+    """
+    alphas = result["alphas_deg"]
+    sigma = result.get("sigma", 1)
+    iout = result.get("iout", 2)
+    num_periods = result.get("num_periods", 8)
+    lengths = result.get("lengths", (1.0, 1.0, 1.0))
+
+    rho0_vals = np.linspace(5.0, 175.0, n_points)
+    omega_vals, r_vals, g_vals = [], [], []
+
+    for rho0 in rho0_vals:
+        res = build_and_analyze(alphas, rho0, sigma, iout, num_periods, lengths)
+        if res is None or res["helix"] is None:
+            omega_vals.append(np.nan)
+            r_vals.append(np.nan)
+            g_vals.append(np.nan)
+            continue
+        omega = period_omega(res["tessellator"])
+        omega_vals.append(np.degrees(omega) if omega is not None else np.nan)
+        r_vals.append(res["helix"]["r"])
+        g_vals.append(res["helix"]["g"])
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+
+    axes[0].plot(rho0_vals, omega_vals, 'o-', ms=3)
+    axes[0].axvline(result["rho0_deg"], color='red', ls='--', label='found rho0')
+    axes[0].axhline(result["omega_achieved_deg"], color='gray', ls=':', label='achieved omega')
+    axes[0].set_xlabel('rho0 [deg]'); axes[0].set_ylabel('omega [deg]')
+    axes[0].set_title('Period rotation angle vs rho0'); axes[0].legend(fontsize=8)
+
+    axes[1].plot(rho0_vals, r_vals, 'o-', ms=3, color='seagreen')
+    axes[1].axvline(result["rho0_deg"], color='red', ls='--')
+    axes[1].set_xlabel('rho0 [deg]'); axes[1].set_ylabel('r')
+    axes[1].set_title('Helix radius vs rho0')
+
+    axes[2].plot(rho0_vals, g_vals, 'o-', ms=3, color='darkorange')
+    axes[2].axvline(result["rho0_deg"], color='red', ls='--')
+    axes[2].set_xlabel('rho0 [deg]'); axes[2].set_ylabel('g')
+    axes[2].set_title('Helix pitch (torsion) vs rho0')
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[saved] {save_path}")
+    else:
+        plt.show()
+
+    return fig, {
+        "rho0_vals": rho0_vals,
+        "omega_vals": np.array(omega_vals),
+        "r_vals": np.array(r_vals),
+        "g_vals": np.array(g_vals),
+    }
