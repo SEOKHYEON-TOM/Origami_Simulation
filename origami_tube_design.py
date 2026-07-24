@@ -214,3 +214,129 @@ def plot_ff_tube_transition(result, save_path=None, n_points=60):
         "r_vals": np.array(r_vals),
         "g_vals": np.array(g_vals),
     }
+
+
+def find_ne_tube_design(target_N, r_target, g_target, w_omega=3.0,
+                         w_stable=10.0, geom_type="hyperbolic",
+                         sigma=1, iout=2, num_periods=8,
+                         lengths=(1.0, 1.0, 1.0), seed=42, verbose=True):
+    """
+    Search (alpha1(=alpha2), alpha3, alpha4) for a bird's-foot non-Euclidean
+    strip whose fixed point rho* closes an N-gon tube cross-section
+    (omega(rho*) == 2*pi/target_N) while hitting target r, g, preferring
+    Class II (stable, |A| < 1) designs.
+    """
+    target_omega = 2.0 * np.pi / target_N
+
+    def objective(params):
+        a1, a3, a4 = params
+        total = 2 * a1 + a3 + a4
+        if geom_type == "hyperbolic" and total <= 360.5:
+            return 1e6 + 100 * (360.5 - total) ** 2
+        if geom_type == "elliptic" and total >= 359.5:
+            return 1e6 + 100 * (total - 359.5) ** 2
+        for a in (a1, a3, a4):
+            if not (5.0 < a < 175.0):
+                return 1e6
+
+        alphas = [a1, a1, a3, a4]
+        A, B = compute_AB(alphas)
+        if A is None:
+            return 1e6
+        cos_star, rho_star = compute_fixed_point(A, B)
+        if rho_star is None:
+            return 1e6 + 1000.0
+
+        res = build_and_analyze(alphas, rho_star, sigma, iout, num_periods, lengths)
+        if res is None or res["helix"] is None:
+            return 1e6
+        omega = period_omega(res["tessellator"])
+        if omega is None:
+            return 1e6
+
+        r, g = res["helix"]["r"], res["helix"]["g"]
+        return ((r - r_target) ** 2 / (r_target ** 2 + 1e-4)
+                + (g - g_target) ** 2
+                + w_omega * (omega - target_omega) ** 2 / (target_omega ** 2 + 1e-4)
+                + w_stable * max(0.0, abs(A) - 1.0) ** 2)
+
+    if geom_type == "hyperbolic":
+        bounds = [(91.0, 165.0), (91.0, 165.0), (91.0, 165.0)]
+    else:
+        bounds = [(10.0, 85.0), (10.0, 85.0), (10.0, 85.0)]
+
+    best_val, best_x = np.inf, None
+
+    # Stage 1: Differential Evolution
+    try:
+        res_de = differential_evolution(
+            objective, bounds, seed=seed, maxiter=400, tol=1e-8,
+            popsize=18, mutation=(0.5, 1.5), recombination=0.7,
+        )
+        if res_de.fun < best_val:
+            best_val, best_x = res_de.fun, res_de.x
+    except Exception as e:
+        if verbose:
+            print(f"  [Warning] Differential Evolution failed: {e}")
+
+    # Stage 2: Nelder-Mead (only if DE found a valid starting point)
+    if best_x is not None:
+        try:
+            res_nm = minimize(
+                objective, best_x, method="Nelder-Mead",
+                options={"xatol": 0.02, "fatol": 1e-9, "maxiter": 2000},
+            )
+            if res_nm.fun < best_val:
+                best_val, best_x = res_nm.fun, res_nm.x
+        except Exception as e:
+            if verbose:
+                print(f"  [Warning] Nelder-Mead failed: {e}")
+
+    if best_x is None:
+        if verbose:
+            print(f"  [Error] Optimization failed completely")
+        result = {
+            "alpha1_deg": None, "alpha3_deg": None, "alpha4_deg": None,
+            "alphas_deg": None, "rho_star_deg": None,
+            "A": None, "B": None,
+            "omega_achieved_deg": None,
+            "r_achieved": None,
+            "g_achieved": None,
+            "residual": float(best_val),
+            "tessellator": None,
+            "sigma": sigma, "iout": iout, "num_periods": num_periods, "lengths": lengths,
+        }
+        return result
+
+    a1, a3, a4 = [float(v) for v in best_x]
+    alphas_opt = [a1, a1, a3, a4]
+    A, B = compute_AB(alphas_opt)
+    cos_star, rho_star = compute_fixed_point(A, B)
+    final = (build_and_analyze(alphas_opt, rho_star, sigma, iout, num_periods, lengths)
+             if rho_star is not None else None)
+    omega_achieved = period_omega(final["tessellator"]) if final else None
+
+    result = {
+        "alpha1_deg": a1, "alpha3_deg": a3, "alpha4_deg": a4,
+        "alphas_deg": alphas_opt, "rho_star_deg": rho_star,
+        "A": A, "B": B,
+        "omega_achieved_deg": np.degrees(omega_achieved) if omega_achieved is not None else None,
+        "r_achieved": final["helix"]["r"] if final and final["helix"] else None,
+        "g_achieved": final["helix"]["g"] if final and final["helix"] else None,
+        "residual": float(best_val),
+        "tessellator": final["tessellator"] if final else None,
+        "sigma": sigma, "iout": iout, "num_periods": num_periods, "lengths": lengths,
+    }
+
+    if verbose:
+        print(f"[NE tube] alphas=({a1:.2f}, {a1:.2f}, {a3:.2f}, {a4:.2f}) deg, "
+              f"rho*={rho_star}")
+        print(f"  A={A:.4f} ({'Class II stable' if abs(A) < 1 else 'Class III unstable'})")
+        omega_str = f"{result['omega_achieved_deg']:.3f}" if result['omega_achieved_deg'] is not None else "N/A"
+        r_str = f"{result['r_achieved']:.4f}" if result['r_achieved'] is not None else "N/A"
+        g_str = f"{result['g_achieved']:.4f}" if result['g_achieved'] is not None else "N/A"
+        print(f"  omega={omega_str} deg (target {np.degrees(target_omega):.1f} deg)")
+        print(f"  r={r_str} (target {r_target}), g={g_str} (target {g_target})")
+        print(f"  residual={best_val:.6f}")
+
+    return result
