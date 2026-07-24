@@ -182,18 +182,22 @@ def plot_ff_tube_transition(result, save_path=None, n_points=60):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
 
     axes[0].plot(rho0_vals, omega_vals, 'o-', ms=3)
-    axes[0].axvline(result["rho0_deg"], color='red', ls='--', label='found rho0')
-    axes[0].axhline(result["omega_achieved_deg"], color='gray', ls=':', label='achieved omega')
+    if result.get("rho0_deg") is not None:
+        axes[0].axvline(result["rho0_deg"], color='red', ls='--', label='found rho0')
+    if result.get("omega_achieved_deg") is not None:
+        axes[0].axhline(result["omega_achieved_deg"], color='gray', ls=':', label='achieved omega')
     axes[0].set_xlabel('rho0 [deg]'); axes[0].set_ylabel('omega [deg]')
     axes[0].set_title('Period rotation angle vs rho0'); axes[0].legend(fontsize=8)
 
     axes[1].plot(rho0_vals, r_vals, 'o-', ms=3, color='seagreen')
-    axes[1].axvline(result["rho0_deg"], color='red', ls='--')
+    if result.get("rho0_deg") is not None:
+        axes[1].axvline(result["rho0_deg"], color='red', ls='--')
     axes[1].set_xlabel('rho0 [deg]'); axes[1].set_ylabel('r')
     axes[1].set_title('Helix radius vs rho0')
 
     axes[2].plot(rho0_vals, g_vals, 'o-', ms=3, color='darkorange')
-    axes[2].axvline(result["rho0_deg"], color='red', ls='--')
+    if result.get("rho0_deg") is not None:
+        axes[2].axvline(result["rho0_deg"], color='red', ls='--')
     axes[2].set_xlabel('rho0 [deg]'); axes[2].set_ylabel('g')
     axes[2].set_title('Helix pitch (torsion) vs rho0')
 
