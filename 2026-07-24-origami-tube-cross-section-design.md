@@ -146,9 +146,13 @@ def plot_ff_tube_transition(result, save_path=None):
 
     3-subplot: omega(rho0) [with target_omega, target_N 표시],
                r(rho0), g(rho0).
-    기대: 양 끝(rho0->5, rho0->175)에서 omega -> 0 에 가까워지고,
-          찾은 rho0*에서 omega == target_omega 를 실제로 지나가는지 확인.
-    (양 끝에서 반드시 0이 된다는 보장은 없음 — 이 플롯으로 실증적으로 확인한다.)
+    기대: 양 끝(rho0->5, rho0->175)에서 **g -> 0** 에 가까워지고 (torsion 소실,
+          평면 상태 — FF strip은 Class I이라 rho_t == rho0 for all t 이므로
+          rho0->0/pi는 모든 crease의 fold angle이 0/pi가 되어 전체가 평면이
+          되는 것이 대수적으로 보장됨), 찾은 rho0*에서 omega == target_omega
+          를 실제로 지나가는지 확인. (omega 자체는 양 끝에서 0으로 갈 필요가
+          없음 — 평면 상태에서도 zigzag의 in-plane 회전각은 0이 아닐 수 있음;
+          "torsion 없음"은 g=0을 의미하지 omega=0을 의미하지 않는다.)
     """
 ```
 
@@ -235,10 +239,12 @@ def plot_ne_tube_convergence(result, rho0_start_deg, num_cells=40, window=8, sav
   항상 가능하다는 보장은 없다 (특히 FF는 r,g 자체가 rho0/alphas에 크게
   의존하므로 목표값에 따라 residual이 크게 남을 수 있음). 이 경우
   `r_target,g_target`을 재조정하며 재탐색하는 것을 1차 대응으로 한다.
-- **FF 양 끝단 평면성**: "rho0=0,π 근처에서 omega->0"이 모든 Kawasaki
-  구성에서 성립하는지는 수학적으로 증명된 바 없음 — `plot_ff_tube_transition`
-  으로 사후 검증하고, 만약 성립하지 않는 설계가 나오면 그 사실 자체를
-  보고한다 (강제하지 않음).
+- **FF 양 끝단 평면성**: rho0=0,π에서 g->0(torsion 소실)은 Class I(A=1,B=0)
+  strip 전체에서 rho_t == rho0 for all t 라는 사실로부터 대수적으로 보장됨
+  (rho0->0/pi면 모든 crease가 flat/flat-folded). 반대로 그 구간에서 omega가
+  어떤 값으로 수렴하는지는 알파값에 의존하며 보장이 없음 — 목표 omega=2π/N을
+  "구간 중간 어딘가에서" 실제로 지나가는지는 `plot_ff_tube_transition`으로
+  사후 검증한다 (탐색이 항상 그런 rho0를 찾아낸다는 보장은 없음).
 - **NE per-cell r,g 근사**: sliding-window PCA 기반 r_t,g_t는 근사치이며
   window 크기에 따라 흔들릴 수 있음 — 정성적 수렴 추세 확인용이지 정밀한
   수치는 아님.
