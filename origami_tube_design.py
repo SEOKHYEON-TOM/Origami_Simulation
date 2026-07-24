@@ -225,6 +225,15 @@ def find_ne_tube_design(target_N, r_target, g_target, w_omega=3.0,
     strip whose fixed point rho* closes an N-gon tube cross-section
     (omega(rho*) == 2*pi/target_N) while hitting target r, g, preferring
     Class II (stable, |A| < 1) designs.
+
+    Note: empirically, the alpha1=alpha2 (bird's-foot) symmetry constrains
+    the converged fixed-point helix to g_achieved =~ 0 (observed magnitude
+    1e-16 to 1e-7 across many configurations) -- g_target is effectively
+    unreachable for nonzero values with this parametrization. Treat
+    `residual` here as primarily an omega-closure + r-fit + stability metric,
+    not a genuine (r, g) fit. The default targets from the plan (r_target=2.0,
+    g_target=0.3) sit near the edge of what this family can achieve; a nearby
+    target (e.g. r_target=1.8, g_target=0.25) may be needed in practice.
     """
     target_omega = 2.0 * np.pi / target_N
 
