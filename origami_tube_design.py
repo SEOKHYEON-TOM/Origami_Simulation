@@ -32,7 +32,7 @@ def period_omega(tessellator, idx0=0, idx1=1):
     mapping independently.
     """
     valid_count = len(tessellator.global_vertices)
-    if valid_count <= max(idx0, idx1):
+    if idx0 < 0 or idx1 < 0 or valid_count <= max(idx0, idx1):
         return None
 
     def _frame_rotation(t):
