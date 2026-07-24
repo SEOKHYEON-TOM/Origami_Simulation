@@ -80,18 +80,47 @@ def find_ff_tube_design(target_N, r_target, g_target, w_omega=3.0,
 
     bounds = [(5.0, 85.0), (5.0, 85.0), (5.0, 175.0)]
 
-    res_de = differential_evolution(
-        objective, bounds, seed=seed, maxiter=200, tol=1e-7,
-        popsize=14, mutation=(0.5, 1.5), recombination=0.7,
-    )
-    best_val, best_x = res_de.fun, res_de.x
+    best_val, best_x = np.inf, None
 
-    res_nm = minimize(
-        objective, best_x, method="Nelder-Mead",
-        options={"xatol": 0.02, "fatol": 1e-9, "maxiter": 2000},
-    )
-    if res_nm.fun < best_val:
-        best_val, best_x = res_nm.fun, res_nm.x
+    # Stage 1: Differential Evolution
+    try:
+        res_de = differential_evolution(
+            objective, bounds, seed=seed, maxiter=200, tol=1e-7,
+            popsize=14, mutation=(0.5, 1.5), recombination=0.7,
+        )
+        if res_de.fun < best_val:
+            best_val, best_x = res_de.fun, res_de.x
+    except Exception as e:
+        if verbose:
+            print(f"  [Warning] Differential Evolution failed: {e}")
+
+    # Stage 2: Nelder-Mead (only if DE found a valid starting point)
+    if best_x is not None:
+        try:
+            res_nm = minimize(
+                objective, best_x, method="Nelder-Mead",
+                options={"xatol": 0.02, "fatol": 1e-9, "maxiter": 2000},
+            )
+            if res_nm.fun < best_val:
+                best_val, best_x = res_nm.fun, res_nm.x
+        except Exception as e:
+            if verbose:
+                print(f"  [Warning] Nelder-Mead failed: {e}")
+
+    if best_x is None:
+        if verbose:
+            print(f"  [Error] Optimization failed completely")
+        result = {
+            "theta0_deg": None, "theta1_deg": None, "rho0_deg": None,
+            "alphas_deg": None,
+            "omega_achieved_deg": None,
+            "r_achieved": None,
+            "g_achieved": None,
+            "residual": float(best_val),
+            "tessellator": None,
+            "sigma": sigma, "iout": iout, "num_periods": num_periods, "lengths": lengths,
+        }
+        return result
 
     theta0, theta1, rho0 = [float(v) for v in best_x]
     alphas_opt = [theta0, theta1, 180.0 - theta0, 180.0 - theta1]
@@ -112,10 +141,11 @@ def find_ff_tube_design(target_N, r_target, g_target, w_omega=3.0,
     if verbose:
         print(f"[FF tube] theta=({theta0:.2f}, {theta1:.2f}, "
               f"{180-theta0:.2f}, {180-theta1:.2f}) deg, rho0={rho0:.2f} deg")
-        print(f"  omega={result['omega_achieved_deg']:.3f} deg "
-              f"(target {np.degrees(target_omega):.1f} deg)")
-        print(f"  r={result['r_achieved']:.4f} (target {r_target}), "
-              f"g={result['g_achieved']:.4f} (target {g_target})")
+        omega_str = f"{result['omega_achieved_deg']:.3f}" if result['omega_achieved_deg'] is not None else "N/A"
+        r_str = f"{result['r_achieved']:.4f}" if result['r_achieved'] is not None else "N/A"
+        g_str = f"{result['g_achieved']:.4f}" if result['g_achieved'] is not None else "N/A"
+        print(f"  omega={omega_str} deg (target {np.degrees(target_omega):.1f} deg)")
+        print(f"  r={r_str} (target {r_target}), g={g_str} (target {g_target})")
         print(f"  residual={best_val:.6f}")
 
     return result
