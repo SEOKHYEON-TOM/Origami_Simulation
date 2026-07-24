@@ -388,17 +388,20 @@ def plot_ne_tube_convergence(result, rho0_start_deg, num_cells=40, window=8,
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
 
     axes[0].plot(t_vals, omega_vals, 'o-', ms=3)
-    axes[0].axhline(result["omega_achieved_deg"], color='red', ls='--', label='target (at rho*)')
+    if result.get("omega_achieved_deg") is not None:
+        axes[0].axhline(result["omega_achieved_deg"], color='red', ls='--', label='target (at rho*)')
     axes[0].set_xlabel('cell index t'); axes[0].set_ylabel('omega_t [deg]')
     axes[0].set_title('Per-cell rotation angle'); axes[0].legend(fontsize=8)
 
     axes[1].plot(t_vals, r_vals, 'o-', ms=3, color='seagreen')
-    axes[1].axhline(result["r_achieved"], color='red', ls='--')
+    if result.get("r_achieved") is not None:
+        axes[1].axhline(result["r_achieved"], color='red', ls='--')
     axes[1].set_xlabel('cell index t'); axes[1].set_ylabel('r_t (windowed)')
     axes[1].set_title('Local helix radius')
 
     axes[2].plot(t_vals, g_vals, 'o-', ms=3, color='darkorange')
-    axes[2].axhline(result["g_achieved"], color='red', ls='--')
+    if result.get("g_achieved") is not None:
+        axes[2].axhline(result["g_achieved"], color='red', ls='--')
     axes[2].set_xlabel('cell index t'); axes[2].set_ylabel('g_t (windowed)')
     axes[2].set_title('Local helix pitch')
 
