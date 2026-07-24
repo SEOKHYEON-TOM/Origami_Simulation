@@ -349,3 +349,69 @@ def find_ne_tube_design(target_N, r_target, g_target, w_omega=3.0,
         print(f"  residual={best_val:.6f}")
 
     return result
+
+
+def plot_ne_tube_convergence(result, rho0_start_deg, num_cells=40, window=8,
+                              save_path=None):
+    """
+    Build a long strip (num_cells periods) starting away from result's
+    rho_star_deg, then plot per-cell omega_t (exact) and windowed local
+    r_t, g_t (approximate, via _extract_helix_params on a sliding window of
+    the backbone) against cell index t. Expected: all three converge toward
+    result's achieved (omega, r, g) as t grows, since rho_t converges to
+    rho_star along the strip for a Class II (stable) design.
+    """
+    alphas = result["alphas_deg"]
+    sigma = result.get("sigma", 1)
+    iout = result.get("iout", 2)
+    lengths = result.get("lengths", (1.0, 1.0, 1.0))
+
+    tess = OrigamiTesellator1D(
+        cell_configs=[{"alphas": alphas, "sigma": sigma, "iout": iout, "lengths": lengths}],
+        num_periods=num_cells, verbose=False,
+    )
+    valid = tess.compute_strip_kinematics(np.deg2rad(rho0_start_deg))
+    backbone = tess._build_crease_lines()[0]
+
+    t_vals, omega_vals, r_vals, g_vals = [], [], [], []
+    for t in range(1, valid):
+        omega = period_omega(tess, t - 1, t)
+        t_vals.append(t)
+        omega_vals.append(np.degrees(omega) if omega is not None else np.nan)
+
+        lo = max(0, t - window)
+        window_pts = backbone[lo:t + 1]
+        helix = _extract_helix_params(window_pts) if len(window_pts) >= 4 else None
+        r_vals.append(helix["r"] if helix else np.nan)
+        g_vals.append(helix["g"] if helix else np.nan)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+
+    axes[0].plot(t_vals, omega_vals, 'o-', ms=3)
+    axes[0].axhline(result["omega_achieved_deg"], color='red', ls='--', label='target (at rho*)')
+    axes[0].set_xlabel('cell index t'); axes[0].set_ylabel('omega_t [deg]')
+    axes[0].set_title('Per-cell rotation angle'); axes[0].legend(fontsize=8)
+
+    axes[1].plot(t_vals, r_vals, 'o-', ms=3, color='seagreen')
+    axes[1].axhline(result["r_achieved"], color='red', ls='--')
+    axes[1].set_xlabel('cell index t'); axes[1].set_ylabel('r_t (windowed)')
+    axes[1].set_title('Local helix radius')
+
+    axes[2].plot(t_vals, g_vals, 'o-', ms=3, color='darkorange')
+    axes[2].axhline(result["g_achieved"], color='red', ls='--')
+    axes[2].set_xlabel('cell index t'); axes[2].set_ylabel('g_t (windowed)')
+    axes[2].set_title('Local helix pitch')
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[saved] {save_path}")
+    else:
+        plt.show()
+
+    return fig, {
+        "t_vals": np.array(t_vals),
+        "omega_vals": np.array(omega_vals),
+        "r_vals": np.array(r_vals),
+        "g_vals": np.array(g_vals),
+    }
