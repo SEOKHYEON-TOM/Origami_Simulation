@@ -506,6 +506,21 @@ def _visualize_tube(result, rho0_deg, num_rings=10, interactive=False, save_path
         if len(ring_pts) > 0:
             line_ring.set_data(ring_pts[:, 0], ring_pts[:, 1])
             line_ring.set_3d_properties(ring_pts[:, 2])
+
+        # _render_faces_and_lines sets axis limits from valid*1.6, which is
+        # tuned for OrigamiTesellator1D's own small-period demos -- for our
+        # num_rings*target_N unit counts this leaves the (small-radius) tube
+        # looking like a tiny dot in a huge empty cube. Override with limits
+        # fit to the actual rendered geometry instead.
+        if valid > 0:
+            all_pts = np.vstack(tess.global_vertices[:valid])
+            center = all_pts.mean(axis=0)
+            extent = np.max(np.abs(all_pts - center))
+            pad = max(extent * 1.15, 0.5)
+            ax.set_xlim(center[0] - pad, center[0] + pad)
+            ax.set_ylim(center[1] - pad, center[1] + pad)
+            ax.set_zlim(center[2] - pad, center[2] + pad)
+
         ax.set_title(_title(rho0_val, valid), fontsize=8)
         return valid
 
