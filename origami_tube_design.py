@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib.widgets import Slider
 from scipy.optimize import differential_evolution, minimize
 
 from origami_tesellator_1D import OrigamiTesellator1D
@@ -448,6 +450,89 @@ def _ring_marker_points(tess, target_N):
     origins = [tess.global_vertices[t][0]
                for t in range(0, len(tess.global_vertices), target_N)]
     return np.array(origins)
+
+
+def _visualize_tube(result, rho0_deg, num_rings=10, interactive=False, save_path=None):
+    """
+    Render the N-gon tube for a find_ff_tube_design/find_ne_tube_design
+    result as an actual 3D OrigamiTesellator1D strip, with a ring-boundary
+    marker line (every target_N units) overlaid to show N-gon closure.
+
+    rho0_deg: the fold state to render (caller picks rho0_deg vs
+    rho_star_deg depending on which search produced `result`).
+    """
+    if result.get("alphas_deg") is None or rho0_deg is None:
+        raise ValueError(
+            "Cannot visualize: this result has no valid design "
+            "(alphas_deg or the fold-state field is None -- likely a "
+            "total search failure from find_ff_tube_design/find_ne_tube_design)."
+        )
+
+    alphas = result["alphas_deg"]
+    sigma = result.get("sigma", 1)
+    iout = result.get("iout", 2)
+    lengths = result.get("lengths", (1.0, 1.0, 1.0))
+    target_N = result["target_N"]
+
+    tess = OrigamiTesellator1D(
+        cell_configs=[{"alphas": alphas, "sigma": sigma, "iout": iout, "lengths": lengths}],
+        num_periods=target_N * num_rings, verbose=False,
+    )
+
+    fig = plt.figure(figsize=(11, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    poly = Poly3DCollection([], edgecolors='#555555', linewidths=0.5, alpha=0.85)
+    ax.add_collection3d(poly)
+    line_bb, = ax.plot([], [], [], color='crimson', lw=2.5, label='Backbone')
+    line_e1, = ax.plot([], [], [], color='navy', lw=1.5, ls='--', label='e1 tips')
+    line_e3, = ax.plot([], [], [], color='darkgreen', lw=1.5, ls='--', label='e3 tips')
+    line_cr, = ax.plot([], [], [], color='black', lw=0.6, alpha=0.35)
+    line_ring, = ax.plot([], [], [], color='magenta', lw=2.5, marker='o', ms=5,
+                         label=f'ring boundary (every {target_N} units)')
+    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+    ax.legend(fontsize=8, loc='upper left')
+
+    def _title(rho0_val, valid):
+        return (f"N={target_N} tube  |  rho0={rho0_val:.1f} deg  |  "
+                f"{valid}/{tess.total_units} units  |  "
+                f"omega={result.get('omega_achieved_deg')}, "
+                f"r={result.get('r_achieved')}, g={result.get('g_achieved')}")
+
+    def _redraw(rho0_val):
+        valid = tess.compute_strip_kinematics(np.deg2rad(rho0_val))
+        tess._render_faces_and_lines(ax, valid, poly, line_bb, line_e1, line_e3, line_cr)
+        ring_pts = _ring_marker_points(tess, target_N)
+        if len(ring_pts) > 0:
+            line_ring.set_data(ring_pts[:, 0], ring_pts[:, 1])
+            line_ring.set_3d_properties(ring_pts[:, 2])
+        ax.set_title(_title(rho0_val, valid), fontsize=8)
+        return valid
+
+    if interactive:
+        if save_path:
+            print("[warning] save_path is ignored when interactive=True")
+        plt.subplots_adjust(bottom=0.18)
+        ax_sl = plt.axes([0.20, 0.06, 0.60, 0.03])
+        slider = Slider(ax_sl, 'rho0 (deg)', -175, 175, valinit=rho0_deg)
+
+        def _update(val=None):
+            _redraw(slider.val)
+            fig.canvas.draw_idle()
+
+        slider.on_changed(_update)
+        _update()
+        plt.show()
+    else:
+        _redraw(rho0_deg)
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"[saved] {save_path}")
+        else:
+            plt.show()
+
+    return fig, tess
 
 
 if __name__ == "__main__":
