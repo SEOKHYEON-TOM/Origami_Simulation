@@ -437,6 +437,19 @@ def plot_ne_tube_convergence(result, rho0_start_deg, num_cells=40, window=8,
     }
 
 
+def _ring_marker_points(tess, target_N):
+    """
+    Origin coordinates of every target_N-th unit (ring boundaries).
+
+    If the strip's per-period screw rotation is exactly 2*pi/target_N, these
+    points trace one smooth helix/circle with uniform spacing -- the visual
+    signature of a genuinely closed N-gon tube cross-section.
+    """
+    origins = [tess.global_vertices[t][0]
+               for t in range(0, len(tess.global_vertices), target_N)]
+    return np.array(origins)
+
+
 if __name__ == "__main__":
     TARGET_N = 4
     R_TARGET = 2.0

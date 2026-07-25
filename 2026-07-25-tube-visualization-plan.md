@@ -56,10 +56,10 @@ from origami_tesellator_1D import OrigamiTesellator1D
 from origami_tube_design import _ring_marker_points
 
 tess = OrigamiTesellator1D(
-    cell_configs=[{"alphas": [70, 70, 120, 110], "sigma": 1, "iout": 3}],
+    cell_configs=[{"alphas": [70, 60, 110, 120], "sigma": 1, "iout": 2}],
     num_periods=8, verbose=False,
 )
-valid = tess.compute_strip_kinematics(np.deg2rad(-20))
+valid = tess.compute_strip_kinematics(np.deg2rad(20))
 assert valid == 8, f"expected 8 valid units, got {valid}"
 
 pts = _ring_marker_points(tess, target_N=4)
@@ -69,10 +69,11 @@ assert np.allclose(pts[1], tess.global_vertices[4][0])
 print("OK: _ring_marker_points")
 EOF
 ```
-Expected: prints `OK: _ring_marker_points`, no traceback. (`alphas=[70,70,120,110]`,
-`rho0_deg=-20` is the same example already used in
-`origami_tesellator_1D.py`'s own `__main__` block, known to produce 8 valid
-units.)
+Expected: prints `OK: _ring_marker_points`, no traceback. (Verified
+empirically that `alphas=[70,60,110,120]` (Kawasaki flat-foldable),
+`rho0_deg=20` produces 8/8 valid units at `num_periods=8` — the original
+plan draft assumed `alphas=[70,70,120,110]`/`rho0_deg=-20` would too, but
+that combination only yields 2/8 valid units in practice; corrected here.)
 
 - [ ] **Step 3: Commit**
 
