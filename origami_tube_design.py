@@ -535,6 +535,30 @@ def _visualize_tube(result, rho0_deg, num_rings=10, interactive=False, save_path
     return fig, tess
 
 
+def visualize_ff_tube(result, num_rings=10, interactive=False, save_path=None):
+    """
+    Render the N-gon tube found by find_ff_tube_design, at its found rho0.
+    See _visualize_tube for parameter details.
+    """
+    return _visualize_tube(result, rho0_deg=result.get("rho0_deg"),
+                            num_rings=num_rings, interactive=interactive,
+                            save_path=save_path)
+
+
+def visualize_ne_tube(result, num_rings=10, interactive=False, save_path=None):
+    """
+    Render the N-gon tube found by find_ne_tube_design, at its fixed point
+    rho_star_deg. See _visualize_tube for parameter details.
+
+    Note: for bird's-foot (alpha1=alpha2) designs, g_achieved is typically
+    ~= 0 (see find_ne_tube_design's docstring) -- the rendered tube will
+    usually look like a flat stack of rings, not a pitched helix.
+    """
+    return _visualize_tube(result, rho0_deg=result.get("rho_star_deg"),
+                            num_rings=num_rings, interactive=interactive,
+                            save_path=save_path)
+
+
 if __name__ == "__main__":
     TARGET_N = 4
     R_TARGET = 2.0
