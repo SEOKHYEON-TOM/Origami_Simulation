@@ -435,7 +435,10 @@ if __name__ == "__main__":
     print("NE tube design search")
     print("=" * 60)
     ne_result = find_ne_tube_design(TARGET_N, R_TARGET, G_TARGET)
-    plot_ne_tube_convergence(
-        ne_result, rho0_start_deg=ne_result["rho_star_deg"] - 20.0,
-        num_cells=40, save_path="ne_tube_convergence.png",
-    )
+    if ne_result["rho_star_deg"] is not None:
+        plot_ne_tube_convergence(
+            ne_result, rho0_start_deg=ne_result["rho_star_deg"] - 20.0,
+            num_cells=40, save_path="ne_tube_convergence.png",
+        )
+    else:
+        print("[skip] NE search did not converge to a valid fixed point; skipping convergence plot")
