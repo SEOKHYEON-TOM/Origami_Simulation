@@ -117,6 +117,8 @@ def find_ff_tube_design(target_N, r_target, g_target, w_omega=3.0,
             "r_achieved": None,
             "g_achieved": None,
             "residual": float(best_val),
+            "target_N": target_N, "target_omega_deg": np.degrees(target_omega),
+            "r_target": r_target, "g_target": g_target,
             "tessellator": None,
             "sigma": sigma, "iout": iout, "num_periods": num_periods, "lengths": lengths,
         }
@@ -134,6 +136,8 @@ def find_ff_tube_design(target_N, r_target, g_target, w_omega=3.0,
         "r_achieved": final["helix"]["r"] if final and final["helix"] else None,
         "g_achieved": final["helix"]["g"] if final and final["helix"] else None,
         "residual": float(best_val),
+        "target_N": target_N, "target_omega_deg": np.degrees(target_omega),
+        "r_target": r_target, "g_target": g_target,
         "tessellator": final["tessellator"] if final else None,
         "sigma": sigma, "iout": iout, "num_periods": num_periods, "lengths": lengths,
     }
@@ -186,6 +190,8 @@ def plot_ff_tube_transition(result, save_path=None, n_points=60):
         axes[0].axvline(result["rho0_deg"], color='red', ls='--', label='found rho0')
     if result.get("omega_achieved_deg") is not None:
         axes[0].axhline(result["omega_achieved_deg"], color='gray', ls=':', label='achieved omega')
+    if result.get("target_omega_deg") is not None:
+        axes[0].axhline(result["target_omega_deg"], color='purple', ls='-.', alpha=0.7, label='target omega')
     axes[0].set_xlabel('rho0 [deg]'); axes[0].set_ylabel('omega [deg]')
     axes[0].set_title('Period rotation angle vs rho0'); axes[0].legend(fontsize=8)
 
@@ -312,6 +318,8 @@ def find_ne_tube_design(target_N, r_target, g_target, w_omega=3.0,
             "r_achieved": None,
             "g_achieved": None,
             "residual": float(best_val),
+            "target_N": target_N, "target_omega_deg": np.degrees(target_omega),
+            "r_target": r_target, "g_target": g_target,
             "tessellator": None,
             "sigma": sigma, "iout": iout, "num_periods": num_periods, "lengths": lengths,
         }
@@ -333,6 +341,8 @@ def find_ne_tube_design(target_N, r_target, g_target, w_omega=3.0,
         "r_achieved": final["helix"]["r"] if final and final["helix"] else None,
         "g_achieved": final["helix"]["g"] if final and final["helix"] else None,
         "residual": float(best_val),
+        "target_N": target_N, "target_omega_deg": np.degrees(target_omega),
+        "r_target": r_target, "g_target": g_target,
         "tessellator": final["tessellator"] if final else None,
         "sigma": sigma, "iout": iout, "num_periods": num_periods, "lengths": lengths,
     }
@@ -360,6 +370,11 @@ def plot_ne_tube_convergence(result, rho0_start_deg, num_cells=40, window=8,
     the backbone) against cell index t. Expected: all three converge toward
     result's achieved (omega, r, g) as t grows, since rho_t converges to
     rho_star along the strip for a Class II (stable) design.
+
+    Note: for bird's-foot (alpha1=alpha2) NE designs, g_achieved is
+    typically ~= 0 regardless of the original g_target (see
+    find_ne_tube_design's docstring for details) -- the g_t panel here
+    will usually converge toward ~0, not toward any nonzero target.
     """
     alphas = result["alphas_deg"]
     sigma = result.get("sigma", 1)
@@ -389,7 +404,9 @@ def plot_ne_tube_convergence(result, rho0_start_deg, num_cells=40, window=8,
 
     axes[0].plot(t_vals, omega_vals, 'o-', ms=3)
     if result.get("omega_achieved_deg") is not None:
-        axes[0].axhline(result["omega_achieved_deg"], color='red', ls='--', label='target (at rho*)')
+        axes[0].axhline(result["omega_achieved_deg"], color='red', ls='--', label='achieved (at rho*)')
+    if result.get("target_omega_deg") is not None:
+        axes[0].axhline(result["target_omega_deg"], color='purple', ls='-.', alpha=0.7, label='target omega')
     axes[0].set_xlabel('cell index t'); axes[0].set_ylabel('omega_t [deg]')
     axes[0].set_title('Per-cell rotation angle'); axes[0].legend(fontsize=8)
 
