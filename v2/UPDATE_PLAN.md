@@ -482,3 +482,191 @@ epsilon 크기를 바꿔도 해와 branch 접선이 타당하게 수렴한다.
 - origami_forward_kinematics.py: 상세 검토 예정.
 
 이 문서의 개선 항목은 제안이며 아직 구현 완료를 뜻하지 않는다.
+
+
+## 9. 선행 문헌과 branch 분류 방법 비교
+
+### 9.1 논의 범위와 결론
+
+전체 kinematic space의 샘플이 이미 계산된다는 전제에서,
+이 절은 **그 상태들을 사용자가 정의한 구동 경로와 도달 구간으로
+완전하게 분류할 수 있는가**를 검토한다. solver를 교체하는 제안과 구분한다.
+
+결론은 다음과 같다.
+
+- 일반적인 Euclidean 물리적 branch의 minority crease 분류는 이론적 근거가 있다.
+- 전체 입력을 developable / elliptic / hyperbolic 셋으로만 나누고,
+  구동 주름을 e1/e4로 고정하고, 두 개의 최근접 추적 배열만 유지하는
+  현재 조합으로는 특수 기하와 모든 경계를 포함한 완전 분리를 보장할 수 없다.
+- 기존 추적 틀은 유지하되, 기하의 특수 조건·번호 정규화·안정적인
+  branch 명명·구간 연결 관계를 보완하는 방향이 적합하다.
+
+여기서 branch는 지정한 시작 상태에서 선택한 구동각을 변화시킬 때
+같은 접힘 경로로 도달할 수 있는 구간을 뜻한다.
+문헌의 folding mode와 실제 구현의 구동각 구간은 별도 필드로 관리한다.
+
+### 9.2 확인한 1차 문헌
+
+1. **Foschi, Hull & Ku (2022)**,
+   Explicit kinematic equations for degree-4 rigid origami vertices,
+   Euclidean and non-Euclidean, Physical Review E 106, 055001.
+   [논문](https://arxiv.org/pdf/2206.12691)
+   [DOI](https://doi.org/10.1103/PhysRevE.106.055001)
+   - 확인 위치: Theorem 1, Corollary 1, Remark 1–2, Figure 3, Appendix C.
+   - 일반 관계식에서 개별 각도의 함수와 folding mode를 얻는 과정에는
+     제곱근 부호의 일관된 선택이 필요하다.
+   - Remark 2는 전 구간을 움직일 수 있는 구동 주름 선택을 권고한다.
+     예시 bird's-foot에서는 섹터각 조건을 명시하고 elliptic의 rho2를 선택한다.
+     따라서 논문이 elliptic의 원래 e1, hyperbolic의 원래 e4를
+     임의 입력에 보편적으로 지정한 것은 아니다.
+   - Corollary 1의 두 folding-mode 곡선 설명을, 특수 퇴화점과 경계의
+     모든 움직임이 코드의 두 배열에 단일값 함수로 들어간다는 보장으로
+     해석하지 않는다. branch라는 용어의 집계 단위도 맞춰야 한다.
+
+2. **Waitukaitis & van Hecke (2016)**,
+   Origami building blocks: Generic and special four-vertices,
+   Physical Review E 93, 023003.
+   [논문](https://ir.amolf.nl/pub/6626/16107OA.pdf)
+   [DOI](https://doi.org/10.1103/PhysRevE.93.023003)
+   - 확인 위치: Section II.A, Eq. (1), Section III.B, Figures 8–9.
+   - 비자기교차 Euclidean 기하의 일반적인 경우, unique fold가
+     minority crease에 해당한다. 가능한 unique fold는 섹터각 부등식
+     alpha_(i-1)+alpha_i < alpha_(i+1)+alpha_(i+2)로 판정한다.
+   - generic 3유형과 각 subtype 외에 special 16유형을 구분한다.
+     collinear branch에는 계속 0인 null fold가 있다.
+   - 완전접힘 경계에서 생기는 추가 움직임을 포함하면 CFF는 4개,
+     2CFF는 6개 branch로 기술한다. 이 문헌의 branch 계수 방식과
+     현재 UI의 도달 구간 계수 방식은 대응 관계를 명시해야 한다.
+
+3. **Waitukaitis, Dieleman & van Hecke (2020)**,
+   Non-Euclidean origami, Physical Review E 102, 031001(R).
+   [논문](https://ir.amolf.nl/pub/10313/16648M_Waitukaitis-S..pdf)
+   [DOI](https://doi.org/10.1103/PhysRevE.102.031001)
+   - 확인 위치: Figure 2, Table I, branch splitting 및 단조성 설명.
+   - 주로 Euclidean에서 작은 각도 surplus를 준 generic 기하를 다루며,
+     unique fold와 주름 번호를 먼저 정렬한다.
+   - 해당 번호 convention에서 elliptic은 A/C, hyperbolic은 B/D이며,
+     한 branch 안에서도 M/V 패턴이 바뀐다.
+     A–D는 두 부호의 surplus를 합친 명칭으로, 한 기하에 항상 4개가
+     공존한다는 의미가 아니다.
+   - 위 조건의 generic 기하에서 elliptic은 unique fold,
+     hyperbolic은 non-unique fold가 부호를 바꾸는 구동 좌표가 된다.
+     임의 주름 쌍의 관계는 비단조일 수 있다.
+     이 규칙의 적용 범위를 큰 surplus나 대칭 퇴화 기하 전체로
+     증명 없이 확대하지 않는다.
+
+4. **Hull (2025)**,
+   A Rigid Origami Elliptic-Hyperbolic Vertex Duality,
+   Results in Mathematics 80, 138.
+   [논문](https://link.springer.com/article/10.1007/s00025-025-02457-8)
+   - 확인 위치: Definition 1 및 Theorem 3의 증명.
+   - alpha_i를 pi-alpha_i로 바꾼 dual 기하의 운동학은
+     접힘각의 교대 부호 변환과 대응한다.
+   - 수학적 기구학과 branch 대응 검증에 사용할 수 있다.
+     원래 패널의 물리적 접촉 허용 여부는 별도 확인한다.
+
+논문마다 crease/sector 인덱스와 M/V 부호 convention이 다를 수 있으므로,
+직접적인 패턴·주름 번호 비교에는 변환표가 필요하다.
+
+### 9.3 현재 규칙을 어떻게 개선할 것인가
+
+#### A. 각도 합 외에 특수 기하 조건을 저장한다
+
+입력의 순환 순서를 유지하면서 다음 특징을 계산한다.
+
+- Euclidean 여부와 angular surplus
+- flat-foldability 조건
+- 인접·대향 섹터각의 동일성
+- 연속한 섹터각 합이 pi가 되는 collinearity
+- 두 개 이상의 조건이 겹치는 퇴화 기하
+
+예를 들어 [60,60,120,120]은 collinear 및 flat-foldable 조건이 겹치고,
+[90,90,90,90]에는 두 collinear 주름 쌍이 있다.
+이들은 일반적인 M/V 두 그룹 규칙의 별도 처리 대상이다.
+
+부동소수점 오차로 거의 같은 것과 정확한 기하 조건을 구분한다.
+near_euclidean / near_collinear 같은 수치 경고를 두되,
+허용오차 하나로 실제 위상 분류를 자동 변경하지 않도록 명세한다.
+
+#### B. generic Euclidean의 minority 규칙은 유지하되 명명 방식을 바꾼다
+
+현재 샘플 수 상위 두 그룹을 branch 1/2로 삼는 대신,
+허용되는 unique crease를 각도 부등식에서 먼저 구하고
+원래 crease index를 포함한 안정적인 이름을 붙인다.
+
+    예: E_unique_e2, E_unique_e3
+
+샘플 개수나 순회 방향이 바뀌어도 물리적으로 같은 branch의 이름이
+바뀌지 않아야 한다. 이 부등식은 strict generic 조건에서 사용하고,
+등호가 되는 특수 기하를 일반 규칙으로 밀어 넣지 않는다.
+
+F가 포함된 상태와 collinear mode는 독립적으로 보존한다.
+generic Euclidean에서 2:2 패턴이 나오는 상태는 우선 수학적
+자기교차 해인지 확인하며, 이를 singularity라고 곧바로 부르지 않는다.
+앞선 S07의 regular 판정은 폐합 Jacobian에 관한 것이며
+물리적 비관통을 보장한다는 뜻이 아니다.
+
+#### C. 번호를 정규화하거나 주름 선택을 실제 기하에서 판정한다
+
+논문 속 e1/e4는 번호 convention을 전제로 한다.
+현재 입력을 순환 이동하면 같은 기하라도 구동 주름의 역할이 바뀐다.
+
+- 원래 주름과 내부 주름의 대응을 명시적으로 유지한다.
+- 사용자가 구동 주름을 고르면 해당 구동각으로 가능한 구간을 분리한다.
+- 자동 선택 모드라면 실제 기하의 단조성·도달 범위를 평가한다.
+- 문헌의 unique/non-unique 규칙은 그 조건이 확인된 범위에서 활용한다.
+
+구동 주름 전환은 자동으로 사용자 branch를 연장하는 수단으로 쓰지 않는다.
+다른 좌표를 통한 경계 검증 또는 전체 공간의 보조 표현으로 사용할 수 있다.
+
+#### D. M/V는 branch의 불변 특징과 변화 특징을 구분해 기록한다
+
+generic Euclidean에서는 unique crease index를 불변 라벨로 활용할 수 있다.
+non-Euclidean에서는 한 branch의 M/V 변화 이력이 정상적인 정보다.
+
+2020 논문의 정렬과 적용 조건이 만족되는 경우,
+elliptic의 non-unique fold 부호나 hyperbolic의 unique fold 부호처럼
+경로에서 유지되는 특징을 seed의 교차 검증에 활용할 수 있다.
+그 밖의 기하에서는 이 부호 불변성을 직접 확인해야 한다.
+
+접힘각 전체의 연속성에 의해 같은 branch를 추적하고,
+M/V 변화는 상태 이벤트로 기록한다. M/V 재계산만으로 branch ID를 바꾸지 않는다.
+
+#### E. 전체 모드와 구동 가능한 구간을 연결 관계로 관리한다
+
+다음 개념을 나눠 저장한다.
+
+    문헌의 folding mode
+        └─ 선택 구동각의 단조 구간
+            └─ 정의역·접촉 정책에서 시작 상태로부터 도달 가능한 구간
+
+구동각 극값, 정의역 끝, 완전접힘 접촉, 특수 기하의 새 움직임을
+명시적인 경계로 기록한다. 같은 점에서 만났다는 이유만으로
+모든 후속 구간을 자동으로 같은 branch에 합치지 않는다.
+
+일반 구간에서는 기존의 최근접 추적을 사용할 수 있다.
+다만 전체 접힘각·이전 접선·연결 구간 정보를 사용하고,
+각도 seam에서는 정의역과 접촉 정책을 적용한다.
+
+경계 자체에서 후보가 합쳐지면, 경계에서 약간 안쪽의 서로 다른 상태를
+seed로 사용해 출발 경로를 구분할 수 있다.
+고정 구동각에서 다른 각도가 연속적으로 변하는 특수 모드는
+구동 범위가 한 점으로 퇴화하는 별도 움직임으로 기록한다.
+
+### 9.4 검증할 항목
+
+이는 향후 구현의 검증 계획이며 이 절에서 Python 코드를 변경한 것은 아니다.
+
+- [ ] 논문의 generic Euclidean 유형·subtype과 special 유형을 사례표로 만든다.
+- [ ] 기준 non-Euclidean 예제의 정렬·부호 convention과 A/C, B/D 연결을 비교한다.
+- [ ] 섹터각 순환 이동 후 crease 번호를 되돌리면 같은 branch 구간이 나오는지 확인한다.
+- [ ] 전체 접힘각 반전 시 대응 branch와 끝점이 일관되게 매핑되는지 확인한다.
+- [ ] 적합한 도메인에서 elliptic–hyperbolic duality를 검증한다.
+- [ ] 샘플 개수·순회 방향을 바꿔도 ID와 연결 관계가 유지되는지 확인한다.
+- [ ] collinear mode, 완전접힘 경계, 단조성 경계에서 해를 잃거나 잘못 연결하지 않는지 확인한다.
+- [ ] 수학적 해의 전체성과 물리적 허용 구간의 전체성을 별도 기준으로 평가한다.
+
+문헌과의 정성적 일치 및 유한 개 사례 통과는 전체 입력에 대한
+수학적 완전성 증명과 구분한다. 전체 case를 보장하려면 입력 섹터각 범위,
+특수 기하, 각도 끝점 포함 여부, 자기교차 정책을 명세한 다음
+각 분류·경계에 대한 처리의 전체성을 입증해야 한다.
