@@ -3,8 +3,9 @@
 ## 문서 목적과 현재 상태
 
 각 모듈의 기능, 재현 가능한 문제, 개선 방향과 완료 기준을 누적한다.
-현재는 **origami_simulator.py의 branch·singularity 검토만 완료**했으며,
-Python 코드는 수정하지 않았다.
+**1–9절은 변경 전 코드에 대한 검토 이력**이다. 당시의 결함, 행 번호,
+미완료 체크리스트는 그 기준 커밋의 상태를 나타내며 현재 구현 상태와 구분한다.
+진행 중인 구현과 최종 검증 결과는 문서 끝의 구현 기록에서 정리한다.
 
 - 검토 기준: 39628b5d9ab1aafdd20dec95305d44dc5edf2c51
 - 대상: [origami_simulator.py](./origami_simulator.py), 총 694개 내용 행과 마지막 개행
@@ -670,3 +671,372 @@ seed로 사용해 출발 경로를 구분할 수 있다.
 수학적 완전성 증명과 구분한다. 전체 case를 보장하려면 입력 섹터각 범위,
 특수 기하, 각도 끝점 포함 여부, 자기교차 정책을 명세한 다음
 각 분류·경계에 대한 처리의 전체성을 입증해야 한다.
+
+## 10. v2 구현 기록
+
+이 절은 변경 후 구현을 설명한다. 이전 절의 재현값과 행 번호는 변경 전
+기준선이며, 실제 수정 파일·검증 범위와 남은 한계는 이 절에서 구분한다.
+수학적 관계식의 유효성과 패널 비관통의 유효성은 별개다.
+
+### 10.1 모듈 구성과 입력 범위
+
+- origami_kinematics.py: 기하 분류, 순수 후보 해 계산, 특수형 규칙,
+  폐합 잔차 및 fixed-drive family.
+- origami_simulator.py: 공개 API, branch 연결, 구간·경계와 세션 상태.
+- origami_viewer.py: Matplotlib 표시와 위젯 콜백. 경로 선택·제약의
+  최종 결정은 모델 세션에 위임한다.
+- origami_tesellator_1D.py / origami_forward_kinematics.py:
+  기존 호출부의 호환성을 검사하며 독립적인 기능 확장은 이번 범위에서 제외한다.
+
+기하 입력은 유한한 degree 섹터각 네 개이며, 각각 0°보다 크고 360°보다
+작아야 한다. 180° 섹터는 기하 정보 자체는 반환하지만 현재의 패널 법선
+복원식이 퇴화하므로 UNSUPPORTED_DEGENERATE_SECTOR로 명시한다.
+이를 해가 없는 정상 기하로 처리하지 않는다.
+모든 reflex-sector 기하에 대한 완전성은 입증하지 않았다.
+180°보다 큰 섹터는 방향 있는 회전 관계식으로 계산하지만, 삼각형 네 개로
+보여주는 기존 패널 패치는 reflex material의 전체 내부 영역을 표현하지 않는다.
+이 표시를 실제 재료의 자기교차 검증으로 해석하지 않는다.
+
+공개 driving_crease는 원래 입력의 e1–e4, 즉 1부터 4까지다.
+생략하면 기존 호환 동작인 elliptic=e1, 그 외=e4를 유지한다.
+명시적으로 지정한 구동 주름은 추적 중 자동으로 변경하지 않는다.
+원래 입력 배열은 복사해 보존하고 모델의 각도·구동 주름은 읽기 전용으로
+관리한다. 다른 기하를 계산하려면 새 simulator를 만든다.
+
+Python 3.10 이상을 사용하며, 이번 실행은 Python 3.12에서 확인했다.
+의존성은 requirements.txt에 기록했다.
+
+    python -m pip install -r v2/requirements.txt
+
+### 10.2 기하 분류
+
+geometry에는 다음 정보가 들어간다.
+
+- case: developable / elliptic / hyperbolic
+- angular_surplus_deg
+- flat_foldable: 일반화한 Kawasaki 조건인 교대 섹터각 합의 동일성
+- euclidean_flat_foldable: developable이면서 flat_foldable
+- collinear 및 collinear_pairs
+- rotations / reflections: 섹터각 및 주름 번호의 대응 permutation
+- rotational_symmetry / reflection_symmetry
+- equal_angle_pairs
+- unique_folds: developable에서 각도 부등식으로 가능한 unique crease
+- special: 특수 조건의 존재
+- near: 거의 Euclidean·flat-foldable·collinear·동일각인 수치 상태
+- degenerate_sectors: 180° 섹터의 원래 번호
+
+입력 순서는 보존한다. 반사는 섹터각과 주름의 permutation이 한 칸
+다르므로 두 map을 별도로 저장한다.
+
+정확 조건의 수치 허용오차는 입력 크기에 비례한 64 machine-epsilon,
+near 조건은 0.001°다. near 판정만으로 기하 유형을 바꾸지 않는다.
+이는 유한 정밀도 입력에서 사용하는 명시적 정책이며 수학적 상징 연산은 아니다.
+
+일반화한 flat-foldable은 alpha1+alpha3=alpha2+alpha4다.
+예를 들어 [110,110,120,120]은 hyperbolic이면서 이 조건을 만족한다.
+이 경우와 Euclidean의 반대각 보완 조건을 혼동하지 않는다.
+
+### 10.3 일반 solver와 특수형 식
+
+#### 일반형의 반각 관계식
+
+원래 Foschi 이차식은 유지한다. x=tan(d/2), y=tan(r1/2) 대신
+s=sin(d/2), c=cos(d/2), p=sin(r1/2), q=cos(r1/2)를 사용하여
+
+    A*p² + B*p*q + C*q² = 0
+
+으로 계산한다. 여기서 내부 구동 주름은 e4이고 내부 섹터각은 a1–a4다.
+
+    A = s²[cos(a1+a3-a4)-cos(a2)]
+        + c²[cos(a1-a3-a4)-cos(a2)]
+    B = 4*s*c*sin(a1)*sin(a3)
+    C = c²[cos(a1+a3+a4)-cos(a2)]
+        + s²[cos(a1-a3+a4)-cos(a2)]
+
+작은 cos 차이는 삼각항등식으로 계산하고, 가능한 부분은 longdouble을
+사용한다. 계수를 정규화한 뒤 안정적인 이차근 표현을 사용한다.
+q=0은 r1=pi라는 유한 각도 상태로 보존하며, 중복근은 하나로 합친다.
+
+다른 두 접힘각의 부호는 제곱값의 부호 추정으로 정하지 않는다.
+기존 두 패널을 배치한 뒤 방향 있는 패널 법선 사이의 atan2로 복원한다.
+모든 후보에 독립적인 SO(3) 폐합 검사를 적용하고 residual을 저장한다.
+일반 허용 잔차는 2e-8이며, 잔차를 만족하지 않는 값을 정상 해로 반환하지 않는다.
+생성자의 residual_tol로 유한한 양의 잔차 허용값을 지정할 수 있다.
+렌더링도 폐합을 만족하지 않는 입력 tuple을 정상적인 패널로 표시하지 않는다.
+
+#### Euclidean flat-foldable의 별도 규칙
+
+내부 섹터각이 (u,v,pi-u,pi-v)이면 일반식에 직접 대입해
+
+    sin(u+v)*y² - 2*sin(u)*x*y + sin(u-v)*x² = 0
+
+를 얻는다. 보통은 두 반각 기울기로 분해되지만, 기울기의 분모가 0인
+경우까지 유지하기 위해 다음 homogeneous factor를 직접 사용한다.
+
+    cos((u+v)/2)*p*c - cos((u-v)/2)*q*s = 0
+    sin((u+v)/2)*p*c - sin((u-v)/2)*q*s = 0
+
+일반화한 non-Euclidean flat-foldable에는 이 Euclidean 전용 식을
+잘못 적용하지 않고 일반 관계식을 사용한다.
+
+#### 특수형의 fixed-drive family
+
+d=0 또는 pi를 일반식에 먼저 대입해 B=0으로 만들고, 남은 A=C=0의
+기하각 항등식을 확인하면 고정 구동각에서 내부 r1이 자유로운 family로
+표현한다. 이는 Euclidean collinear뿐 아니라 연속한 섹터각 두 쌍이 같은
+일반화 bird's-foot 등의 경우도 포함한다. 작은 계수라는 이유만으로
+family를 만들지 않고, 입력 기하의 삼각항등식이 성립하는지를 검사한다.
+
+각 family는 다음을 제공한다.
+
+- fixed_drive
+- free_crease: 원래 입력 번호
+- mode_id
+- valid_intervals
+- evaluate(free_angle): 네 접힘각과 폐합 잔차
+
+epsilon으로 기하를 바꾸지 않는다. family를 임의의 두 표본으로 축소하지 않는다.
+다음 식은 해당 입력의 일반 관계식에서 얻는 재현 가능한 예다.
+
+    [60,60,120,120], d=rho4=pi:
+        rhos(t) = [t, pi, -t, pi]
+    [70,110,70,110], d=rho4=0:
+        rhos(t) = [t, 0, t, 0]
+    [90,90,90,90], rho1=rho3=pi:
+        rhos(t) = [pi, t, pi, -t]
+    [110,110,120,120], d=rho4=pi:
+        rhos(t) = [t, pi, -t, pi]
+
+앞의 세 예는 t∈[-pi,pi]의 101개 값에 대해 독립 회전 폐합 오차가 5e-16
+이하였다. 일반화 bird's-foot를 포함한 evaluator의 별도 표본도 독립 폐합
+검증을 수행한다. 이는 명시한 family의 검증이며 특수 기하 전체의 분류 증명은 아니다.
+
+대칭성은 있으나 위 식의 별도 factor나 collinear family로 처리하지 않은
+입력은 symmetric_general_fallback 규칙으로 기록한다.
+이 경우에도 후보의 폐합을 검사하되, 모든 대칭 특수형에 대한 독립적인
+닫힌 형식의 모드 규칙을 완성했다고 주장하지 않는다.
+
+
+### 10.4 Branch, seed와 도달 구간
+
+Branch는 id, mode_id, states, seed_state, segments, endpoints, family,
+physical_segments, seed_checks, reachable_intervals를 제공한다.
+수학적 모드와 구동 가능한 연결 성분을 분리한다.
+
+일반 developable은 후보에 부여된 unique crease로 E_unique_eN을 사용한다.
+Flat-foldable의 factor는 ff_plus / ff_minus, collinear에서는 null fold 모드와
+나머지를 구분한다. 나머지는 입력의 순환 순서에서 정한 canonical 상태와
+구동 성분에 따른 mode 번호를 사용한다. 이는 전역적인 기하 파라미터 변화에
+대한 mode의 위상적 동일성을 증명한 ID는 아니다.
+
+추적에서는 네 접힘각을 이전 연속 상태 또는 접선 예측값에 lift한다.
+후보와 예측 사이의 거리와 모호성을 검사하며, 필요하면 구동각 간격을
+재귀적으로 줄인다. 같은 branch를 먼저 선택한 뒤 contact bound를 검사한다.
+
+구동 정의역은 일반식의 판별식에 대한 tan²(d/2) 다항식의 실근으로 나눈다.
+내부 구간에서 해의 존재를 확인하고, 구동 불가능한 공백을 가로지르는
+이동은 DRIVE_EXTREMUM으로 거부한다. 실제 branch가 불명확한 지점에서
+다른 후보로 임의 탈출하지 않는다. 이 수치 구간 분할은 정확 대수적인
+전체성 인증과 구분한다.
+
+추적이 필요한 경우 각 구동 성분에서 기본 10개 정상 내부 후보를
+확인한다. 후보 하나의 검사에는 그 구동각의 해들이 기준 상태의 서로 다른
+경로에 일관되게 연결되는지 확인하는 과정이 포함된다.
+최대 시도 수는 기본 50개이며, 정상 검사가 충분하지 않으면 실패를 알린다.
+직접 모드식으로 처리하는 경우에는 다중 seed 검사를 생략한다.
+실제 시도 수는 metrics.seed_attempts와 metrics.seed_checks에서 확인한다.
+
+연결 성분의 끝, 각도 정의역 끝, contact bound, 수치 실패를 Endpoint의
+reason으로 구분한다. 실제 연속 각도 bound의 유효/무효 전이가 확인된
+contact bracket에는 22회의 이분 탐색을 적용한다. 이는 각도 제한의 경계이며
+패널 충돌 시점은 아니다. admissible_domain은 관계식에서 얻은 구동 정의역,
+reachable_intervals는 추적으로 확인한 범위로 분리한다. 수치 실패가 먼저
+발생하면 도달 범위를 실제 도달점으로 줄이고 실패 이유를 보존한다.
+그래프는 단절 구간과 각도 seam을 분리해 그린다.
+
+대표 구동각 구간의 양 끝에서 네 접힘각 및 접선 이웃을 검사하여
+seam_connections를 기록한다. 같은 물리적 경로가 대표 구간의 서로 다른
+성분에 나타날 수 있으므로 mode_id와 principal 구간의 branch ID는
+별개다. 사용자 세션의 branch ID는 정상적인 seam 통과 중 유지한다.
+
+### 10.5 Contact와 주기적 slider
+
+현재 contact=True는 **연속 접힘각의 [-pi,pi] bound**다.
+패널-패널 비관통이나 재료 두께 검사는 구현하지 않는다.
+branch의 principal angle이 범위 안에 있다는 이유만으로 경로를 허용하지 않고,
+선택한 경로를 따라 lift한 연속 각도가 bound를 만족하는지 검사한다.
+
+SimulationSession은 다음 상태를 별도로 관리한다.
+
+- drive_unwrapped: 진행 이력을 가진 연속 구동각
+- drive_wrapped: 표시용 대표 구동각
+- winding_count
+- rhos: 연속 접힘각
+- branch_id / residual / events / mv_pattern
+
+대부분의 대표 각도는 [-pi,pi)이며, 정확한 양의 pi seam은 +pi로 표시한다.
+대표값이 바뀌어도 실제 구동 진행 방향은 연속 각도에서 계산한다.
+
+contact=False에서는 slider에 기본 0.1 rad의 확장 구간을 둔다.
+Native Matplotlib slider가 초과량을 먼저 잘라버리는 것을 피하기 위해
+양 끝을 실제로 확장하며, 허용 seam을 통과하면 초과량을 보존해 반대편으로
+위젯을 이동시킨다. 콜백 이벤트와 재진입 guard를 사용해 이 재배치가
+두 번째 사용자 이동으로 처리되지 않도록 한다.
+
+    -pi-epsilon -> +pi-epsilon
+    +pi+epsilon -> -pi+epsilon
+
+경계 통과는 매 단계의 네 접힘각과 예측 접선으로 확인한다.
+실제 구동 불가능 구간, 모호한 분기, 수치 실패는 wrap으로 건너뛰지 않는다.
+정상적인 seam 통과는 branch ID를 유지하며 ANGLE_WRAP 이벤트를 기록한다.
+
+contact=True는 구동각을 [-pi,pi]로 제한하고 자동 주기 이동을 적용하지 않는다.
+contact=False에서 True로 바꿀 때 현재 연속 구동각과 접힘각이 bound 밖이면
+전환을 거부하고 checkbox 및 기존 세션 상태를 되돌린다.
+다른 branch로 옮기거나 상태를 principal 값으로 덮어 허용시키지 않는다.
+
+고정 구동각 family를 선택하면 주 구동 slider 대신 별도의 free-fold
+slider로 그 family의 자유 접힘각을 조절한다.
+고정 구동각 자체를 움직여 family를 벗어나려는 요청은 거부한다.
+한 대표 상태만 보여주고 연속 family 전체를 계산한 것처럼 취급하지 않는다.
+
+### 10.6 실행과 API
+
+v2 디렉토리를 작업 디렉토리로 하는 예:
+
+    python origami_simulator.py --alphas 70 20 110 160 --drive 4 --resolution 1000 --no-contact
+
+Headless 실행:
+
+    MPLBACKEND=Agg python origami_simulator.py --alphas 60 60 120 120 --drive 4 --resolution 200 --no-contact --no-show
+
+Python API:
+
+    import numpy as np
+    from origami_simulator import OrigamiDegree4Simulator
+
+    sim = OrigamiDegree4Simulator(
+        [70,20,110,160], driving_crease=4,
+        contact=False, verbose=False, seed_count=10, max_seeds=50,
+    )
+    print(sim.geometry)
+    sim.run_simulation(resolution=1000)
+    print(list(sim.branches))
+    session = sim.create_session(branch=next(iter(sim.branches)), contact=False)
+    session.move_to(np.pi + 0.01)
+    print(session.state.drive_wrapped, session.state.winding_count)
+    viewer = sim.show_3d_interactive(branch=session.branch_id, contact=False)
+
+기존의 _solve_quadratic_rho1 / solve_full_rhos_from_drive_and_rho1 /
+get_3d_geometry 호출은 유지한다. 공개 driving_crease는 1-based,
+기존 output_index는 0-based다.
+
+단일 입출력 조회 결과의 다중 해 shape는 다음과 같이 수정했다.
+
+    output_angles.shape == (n_inputs, max_solutions)
+    folding_angles_all.shape == (n_inputs, max_solutions, 4)
+    num_solutions.shape == (n_inputs,)
+
+해가 없는 입력은 num_solutions=0으로 표현하며,
+구현 오류를 bare except로 숨기지 않는다.
+branch를 지정하지 않은 sign 조회는 해를 부호로 필터링하는 기존 의미를
+유지하지만, 부호 하나가 branch의 고유 ID임을 뜻하지 않는다.
+
+실제 선택 가능한 branch 전체는 sim.branches에서 확인한다.
+branch1/2와 math_branch1/2는 기존 코드 호환을 위한 첫 두 일반 경로의 alias이며,
+특수 family나 세 번째 이후의 경로를 포함하는 전체 인터페이스가 아니다.
+
+
+### 10.7 실제 검증 결과와 실행 비용
+
+실행 환경: Python 3.12.14, NumPy 2.3.5, Matplotlib 3.10.8, Agg backend.
+
+재현 명령:
+
+    MPLBACKEND=Agg MPLCONFIGDIR=/tmp/origami-test-mpl python -m unittest discover -s v2/tests -v
+
+현재 자동 검증은 **38개 테스트 통과, 약 11.872초**다. 검사 범위는 다음과 같다.
+
+- 여덟 기준 입력과 원래 e1–e4 구동 주름에서의 독립 회전 폐합
+- 0에서의 정확한 부호 복원, 반각 무한대 근, near-flat 기울기
+- null-fold 모드와 고정 구동각 family
+- 기하의 회전·반사 permutation과 주름 incidence
+- 원래 번호로 되돌린 순환 재번호화 해 집합의 일치
+- 접힘각 반전 및 적합한 입력의 elliptic–hyperbolic duality
+- 샘플 수 및 내부 seed 순서 변경에 대한 branch ID 일관성
+- 정방향 이동 후 역방향 복귀의 상태·branch 일치
+- 10–50개 seed 검사의 조건부 실행
+- 다중 해 조회 shape, 해 개수와 NaN 오류 회귀
+- 세 종류의 기존 tessellator/forward-kinematics 호출
+- 실제 모델의 periodic slider 및 family slider 콜백
+- 확장 구간의 초과량 보존, 반복 회전, winding_count, 콜백 재귀 방지
+- contact 설정 전환 거부와 정확한 +pi에서의 비주기적 후퇴
+- 좁은 구동 불가능 구간을 포함한 gap 통과 거부
+- 캐시된 빈 후보의 실패 이유 보존
+- 수치 추적 실패 시 미도달 구간을 reachable로 보고하지 않는지
+
+전체 테스트의 최종 실행 횟수와 시간은 사용 환경의 부하에 따라 달라진다.
+실제 OS 창에서 마우스를 드래그하는 수동 시험은 수행하지 않았다.
+Agg에서 실제 Matplotlib 위젯의 콜백과 모델 상태 갱신을 실행했고,
+3D 및 family 화면을 파일로 생성했다.
+
+변경 전 solver의 **유효한** 해 보존을 별도로 비교했다.
+108개 기하 × 45개 구동각 표본에서 폐합을 만족한 기존 후보 5,353개 중
+새 solver가 놓친 후보는 0개였다. 새 후보는 5,513개였고 최대 폐합 오차는
+약 2.13e-15였다. 이는 명시한 표본의 비교 결과이며 연속 입력 공간 전체의
+완전성 증명은 아니다. 기존 solver의 잘못된 부호 tuple은 보존하지 않는다.
+
+다음은 동일 실행 환경에서 resolution=1000으로 측정한 한 차례의 실행이다.
+시간은 run_simulation의 벽시계 시간이고 GUI 초기화 비용은 포함하지 않는다.
+
+| 섹터각 [deg] | 변경 전 [s] | 변경 후 [s] | 저장된 branch/family 항목 수 | family 수 | seed 검사 수 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| [70,20,110,160] | 0.141 | 0.541 | 2 | 0 | 0 |
+| [60,90,135,75] | 0.131 | 0.887 | 2 | 0 | 10 |
+| [70,70,120,110] | 0.129 | 0.861 | 2 | 0 | 10 |
+| [60,60,120,120] | 0.135 | 0.880 | 4 | 2 | 0 |
+| [70,110,70,110] | 0.133 | 0.766 | 3 | 1 | 0 |
+| [90,90,90,90] | 실행 실패 | 1.063 | 5 | 3 | 0 |
+| [60,90,120,150] | 0.129 | 0.815 | 2 | 0 | 10 |
+| [40,80,50,110] | 0.097 | 0.623 | 4 | 0 | 20 |
+
+이 표의 항목 수는 **선택한 구동각의 일반 경로와 fixed-drive family를 저장한
+자료구조의 개수**다. 논문의 CFF 4개 / 2CFF 6개라는 branch 집계와 동일한
+수를 세는 값이 아니다. ±pi의 구동 seam을 별도 항목으로 저장하고 연결
+정보로 대응시키며, family의 자유각 구간도 별도 자료로 보존한다.
+
+여덟 기준 실행의 새 full_math_data에서 최대 폐합 오차는 약 2.18e-15였다.
+잘못된 상태 제거와 family 표본 추가 때문에 이전 전체 배열의 길이나 값과
+bitwise 동일성을 목표로 하지 않는다.
+
+새 실행은 기준의 정상 실행보다 약 4–8배 느렸다. 네 접힘각의 독립 폐합과
+법선 복원, 조건부 다중 seed, adaptive continuation 및 contact 경계 계산이
+추가되었기 때문이다. 속도 향상은 주장하지 않는다. 캐시는 동일 모델의
+반복 후보 계산을 줄이며, 모델 입력 변경 시 이전 결과를 재사용하지 않도록
+입력과 캐시 정책을 관리한다.
+
+변경 전/후 상세 수치, 비교 스크립트의 결과, 프로파일과 화면 이미지는
+작업 디렉토리의 baseline.json, after.json, solver_comparison.json,
+verification-full.log 및 profile_after.txt에 남겼다.
+이 임시 실행 기록은 제품 코드의 의존성이 아니다.
+
+### 10.8 남은 한계와 완료 범위
+
+- 180° 섹터를 포함하는 퇴화 패널은 명시적인 미지원 상태다.
+- 모든 대칭 특수형의 독립 factor 규칙을 도출한 것은 아니다.
+  mode_rules에 표시된 general fallback을 사용하는 기하가 남아 있다.
+- 관계식 후보와 도달 경계의 처리는 수치 알고리즘이다.
+  전체 섹터각 공간에 대한 interval arithmetic 또는 대수적 완전성 증명을
+  수행하지 않았다.
+- contact는 연속 각도 제한이다. 패널 비관통, 층 순서, 두께 및 재료 변형은
+  검증하지 않는다.
+- 입력 기하를 연속적으로 바꿀 때 생성·소멸하는 branch의 전역 ID 추적은
+  이번 인터페이스의 보장 범위가 아니다.
+- 수학적으로 같은 회전 표현과 contact 경로의 동일성을 구분한다.
+  fixed-drive family의 free-fold 이동도 명시적으로 선택하며,
+  모호한 실제 분기에서 후속 경로를 자동 선택하지 않는다.
+- 테스트에 포함한 일반형·특수형·경계 사례에서는 유효 해 보존과 동작을
+  확인했다. 이것을 “모든 case의 완벽한 분리”로 확대해서 보고하지 않는다.
+
+v1은 변경 대상에서 제외했다. 이번 구현은 기존 세 모듈의 상위 목적을
+유지하면서 후보 계산, 모드/branch 관리, 세션 및 표시의 책임을 분리한다.

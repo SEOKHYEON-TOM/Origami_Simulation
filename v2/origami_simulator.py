@@ -1,694 +1,822 @@
-﻿import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, RadioButtons, CheckButtons
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+"""Degree-four origami candidates, connected actuation branches and sessions.
+
+All public crease indices are original one-based indices; angles are radians
+unless named *_deg. Contact implements continuous angle bounds, not collision.
+"""
+
+from dataclasses import dataclass, field
+import time
+import numpy as np
+from origami_kinematics import Kinematics, closure_error, rx, rz, rotation
+
+TAU = 2 * np.pi
+
+
+def wrap_angle(a):
+    return (np.asarray(a) + np.pi) % TAU - np.pi
+
+
+def lift_angles(q, ref):
+    return np.asarray(ref) + wrap_angle(np.asarray(q) - ref)
+
+
+@dataclass
+class Endpoint:
+    angle: float
+    reason: str
+    detail: str = ""
+
+
+@dataclass
+class State:
+    rhos: np.ndarray
+    drive_unwrapped: float
+    drive_wrapped: float
+    winding_count: int
+    branch_id: str
+    residual: float
+    events: tuple = ()
+    mv_pattern: str = ""
+
+
+@dataclass
+class Branch:
+    id: str
+    mode_id: str
+    states: np.ndarray
+    seed_state: np.ndarray
+    segments: list = field(default_factory=list)
+    endpoints: list = field(default_factory=list)
+    family: object = None
+    physical_segments: list = field(default_factory=list)
+    seed_checks: int = 0
+    reachable_intervals: list = field(default_factory=list)
+    admissible_domain: tuple | None = None
+    seam_connections: dict = field(default_factory=dict)
+
+
+class PathError(ValueError):
+    def __init__(self, reason, detail=""):
+        self.reason = reason
+        super().__init__(reason + (": " + detail if detail else ""))
+
 
 class OrigamiDegree4Simulator:
-    def __init__(self, alphas_deg, contact=True, verbose=True):
-        """
-        alphas_deg: [alpha1, alpha2, alpha3, alpha4] [deg]
-        contact: physical bound (-pi~pi) between panels 
-        """
-        self.original_alphas_deg = alphas_deg
+    def __init__(
+        self,
+        alphas_deg,
+        contact=True,
+        verbose=True,
+        driving_crease=None,
+        seed_count=10,
+        max_seeds=50,
+        wrap_margin=0.1,
+        residual_tol=2e-8,
+    ):
+        if not 10 <= int(seed_count) <= int(max_seeds) <= 50:
+            raise ValueError("Require 10 <= seed_count <= max_seeds <= 50")
+        if not np.isfinite(residual_tol) or residual_tol <= 0:
+            raise ValueError("residual_tol must be finite and positive")
+        self._core = Kinematics(
+            np.array(alphas_deg, float, copy=True),
+            driving_crease=driving_crease,
+            residual_tol=residual_tol,
+        )
+        self.original_alphas_deg = np.array(alphas_deg, float)
         self.original_alphas = np.deg2rad(self.original_alphas_deg)
-        self.contact = contact
-        self.verbose = verbose
-       
-        sum_alpha = np.sum(self.original_alphas)
-        self.is_euclidean = np.isclose(sum_alpha, 2*np.pi)
-        
-        if self.is_euclidean:
-            self.driving_crease = 4
-            self.geom_type = "Euclidean (Flat)"
-        elif sum_alpha < 2*np.pi:
-            self.driving_crease = 1
-            self.geom_type = "Elliptic (Cone-like)"
-        else:
-            self.driving_crease = 4
-            self.geom_type = "Hyperbolic (Saddle-like)"
-            
-        self.shift_amount = 4 - self.driving_crease
-        self.alphas = np.roll(self.original_alphas, self.shift_amount)
-        
-        self.full_math_data = [] # total solution space (Faded lines)
-        self.branch1 = []        # path 1 (M/V pattern 1)
-        self.branch2 = []        # path 2 (M/V pattern 2)
-    
-        if self.verbose:
-            print(f"[{self.geom_type}] Sum: {np.rad2deg(sum_alpha):.2f} deg / Driving Crease: e{self.driving_crease}")
-        
-        # Hard coding parameters
-        self.TOLERANCE = 1e-9 # treated as zero 
-        self.SINGULARITY_THRESHOLD = 1e-15 # wanna avoid
+        self.geometry = self._core.geometry
+        self.alphas = self._core.internal_alphas
+        for angles in (self.original_alphas_deg, self.original_alphas, self.alphas):
+            angles.setflags(write=False)
+        self._driving_crease = self._core.driving_crease
+        self.shift_amount = self._core.shift_amount
+        self.is_euclidean = self.geometry["case"] == "developable"
+        self.geom_type = {
+            "developable": "Euclidean (Flat)",
+            "elliptic": "Elliptic (Cone-like)",
+            "hyperbolic": "Hyperbolic (Saddle-like)",
+        }[self.geometry["case"]]
+        self.contact, self.verbose = bool(contact), bool(verbose)
+        self.seed_count, self.max_seeds = int(seed_count), int(max_seeds)
+        self.wrap_margin = float(wrap_margin)
+        if not 0 < self.wrap_margin < np.pi:
+            raise ValueError("wrap_margin must be in (0,pi)")
+        self.TOLERANCE, self.SINGULARITY_THRESHOLD = 1e-9, 1e-15
+        self.branches = {}
+        self._cache = {}
+        self._status_cache = {}
+        self._viewer = None
+        for name in (
+            "branch1",
+            "branch2",
+            "math_branch1",
+            "math_branch2",
+            "full_math_data",
+        ):
+            setattr(self, name, np.empty((0, 4)))
+        self.singular_states = []
+        self.metrics = {}
 
-    # --- [Core Solver] ---
+    @property
+    def driving_crease(self):
+        """Original input index. Construct a new simulator to change geometry/driver."""
+        return self._driving_crease
+
+    @property
+    def drive_index(self):
+        return self.driving_crease - 1
+
+    def solve_states(self, drive):
+        return self._core.solve(float(drive))
+
+    def _solve(self, drive):
+        key = (round(float(wrap_angle(drive)), 15), self._core.residual_tol)
+        if key not in self._cache:
+            self.metrics["solve_calls"] = self.metrics.get("solve_calls", 0) + 1
+            self._cache[key] = list(self._core.solve(key[0]))
+            self._status_cache[key] = self._core.last_status
+        self._core.last_status = self._status_cache[key]
+        return self._cache[key]
+
     def _solve_quadratic_rho1(self, rho_drive):
-        """Given rho 4, find rho 1 solution using eq6 (Appendix A6) in Foschi(2022)."""
-        a1, a2, a3, a4 = self.alphas
-        x = np.tan(rho_drive / 2)
-        # define coefficients of Ay^2 + By + C = 0 (y = tan(rho1/2))
-        A = x**2 * np.cos(a1+a3-a4) + np.cos(a1-a3-a4) - (1+x**2)*np.cos(a2)
-        B = 4 * x * np.sin(a1) * np.sin(a3)
-        C = np.cos(a1+a3+a4) + x**2 * np.cos(a1-a3+a4) - (1+x**2)*np.cos(a2)
-        
-        if np.abs(A) < self.TOLERANCE:
-            if np.abs(B) < self.TOLERANCE: return []
-            return [2 * np.arctan(-C / B)]
-            
-        discriminant = B**2 - 4*A*C
-        if discriminant < -self.TOLERANCE: return [] # Kinematically infeasible
-        discriminant = max(0, discriminant)
-        y1 = (-B + np.sqrt(discriminant)) / (2*A)
-        y2 = (-B - np.sqrt(discriminant)) / (2*A)
-        return [2 * np.arctan(y1), 2 * np.arctan(y2)]
+        return self._core.quadratic_roots(float(rho_drive))
 
     def solve_full_rhos_from_drive_and_rho1(self, rho_drive, rho1):
-        """Recover all four folding angles from the driving angle and rho1."""
+        c = self._core.recover(float(rho_drive), float(rho1))
+        return None if c is None else c.rhos.copy()
 
+    def get_mv_pattern(self, rhos, tolerance=1e-7):
+        return "".join(
+            "V" if r > tolerance else "M" if r < -tolerance else "F"
+            for r in wrap_angle(rhos)
+        )
+
+    def _domains(self):
         a1, a2, a3, a4 = self.alphas
-        x4, x1 = np.tan(rho_drive / 2), np.tan(rho1 / 2)
+        aa = np.cos(a1 + a3 - a4) - np.cos(a2)
+        ac = np.cos(a1 - a3 - a4) - np.cos(a2)
+        ca = np.cos(a1 - a3 + a4) - np.cos(a2)
+        cc = np.cos(a1 + a3 + a4) - np.cos(a2)
+        bb = 4 * np.sin(a1) * np.sin(a3)
+        poly = np.array([-4 * aa * ca, bb * bb - 4 * (aa * cc + ac * ca), -4 * ac * cc])
+        scale = max(abs(poly).max(), 1e-30)
+        nz = np.flatnonzero(abs(poly) > scale * 1e-12)
+        points = [-np.pi, np.pi]
+        if len(nz):
+            for z in np.roots(poly[nz[0] :] / scale):
+                if abs(z.imag) < 1e-10 and z.real > 1e-12:
+                    t = float(2 * np.arctan(np.sqrt(z.real)))
+                    if 1e-7 < t < np.pi - 1e-7:
+                        points.extend([-t, t])
+        points = sorted(set(round(t, 13) for t in points))
+        return [
+            (a, b)
+            for a, b in zip(points[:-1], points[1:])
+            if any(self._solve(a + f * (b - a)) for f in (0.5, 0.371, 0.629))
+        ]
 
-        N2 = (1+x4**2)*np.cos(a1+a2) - x4**2*np.cos(a3-a4) - np.cos(a3+a4)
-        D2 = (1+x4**2)*np.cos(a1-a2) - x4**2*np.cos(a3-a4) - np.cos(a3+a4)
-        N3 = (1+x1**2)*np.cos(a2+a3) - x1**2*np.cos(a4-a1) - np.cos(a4+a1)
-        D3 = (1+x1**2)*np.cos(a2-a3) - x1**2*np.cos(a4-a1) - np.cos(a4+a1)
+    def _step(self, q, t, target, tangent=None, depth=0):
+        dt = target - t
+        predicted = q if tangent is None else q + tangent * dt
+        cs = self._solve(target)
+        if not cs and self._core.last_status == "CONTINUUM":
+            # An exact special-family seam can contain the limit of this mode.
+            # Its incoming tangent selects that limit, never an arbitrary sample.
+            if tangent is None:
+                raise PathError(
+                    "AMBIGUOUS", "a fixed-drive continuum needs an incoming path"
+                )
+            self._core.solve(float(wrap_angle(target)))
+            cs = [
+                f["evaluate"](float(predicted[f["free_crease"] - 1]))
+                for f in self._core.last_families
+            ]
+            cs = [c for c in cs if c is not None]
+        if not cs:
+            status = self._core.last_status
+            raise PathError(
+                "DRIVE_EXTREMUM" if status == "NO_SOLUTION" else "NUMERICAL_FAILURE",
+                status,
+            )
+        lifted = [lift_angles(c.rhos, predicted) for c in cs]
+        for v in lifted:
+            v[self.drive_index] = target
+        scores = np.array([np.linalg.norm(v - predicted) for v in lifted])
+        ids = np.argsort(scores)
+        best = int(ids[0])
+        ambiguous = (
+            len(ids) > 1
+            and abs(scores[ids[1]] - scores[best]) < 1e-9
+            and np.linalg.norm(lifted[ids[1]] - lifted[best]) > 1e-6
+        )
+        if (ambiguous or scores[best] > 0.16) and depth < 12 and abs(dt) > 1e-7:
+            mid = (t + target) / 2
+            qm, tm, _ = self._step(q, t, mid, tangent, depth + 1)
+            return self._step(qm, mid, target, tm, depth + 1)
+        if ambiguous:
+            raise PathError("AMBIGUOUS", "indistinguishable continuations")
+        if scores[best] > 0.8:
+            raise PathError("NUMERICAL_FAILURE", "correction too large")
+        v = lifted[best]
+        return v, (v - q) / dt if abs(dt) > 1e-14 else tangent, cs[best]
 
-        if abs(D2) < self.SINGULARITY_THRESHOLD or abs(D3) < self.SINGULARITY_THRESHOLD:
-            return None
+    def _check_drive_path(self, start, target):
+        lo, hi = sorted((start, target))
+        domains = getattr(self, "_drive_domains", None)
+        if domains is None:
+            domains = self._domains()
+            self._drive_domains = domains
+        intervals = sorted(
+            (a + k * TAU, b + k * TAU)
+            for k in range(int(np.floor(lo / TAU)) - 2, int(np.ceil(hi / TAU)) + 3)
+            for a, b in domains
+        )
+        cursor = lo
+        for a, b in intervals:
+            if b < cursor - 1e-10:
+                continue
+            if a > cursor + 1e-10:
+                break
+            cursor = max(cursor, b)
+            if cursor >= hi - 1e-10:
+                return
+        raise PathError(
+            "DRIVE_EXTREMUM", "movement crosses an infeasible drive interval"
+        )
 
-        x2_sq, x3_sq = -N2 / D2, -N3 / D3
-        if x2_sq < -1e-5 or x3_sq < -1e-5:
-            return None
+    def _advance(self, q, t, target, tangent=None, contact=False):
+        self._check_drive_path(t, target)
+        if abs(target - t) < 1e-13:
+            return q.copy(), tangent, None
+        c = None
+        for goal in np.linspace(
+            t, target, max(1, int(np.ceil(abs(target - t) / 0.035))) + 1
+        )[1:]:
+            q, tangent, c = self._step(q, t, float(goal), tangent)
+            t = float(goal)
+            if contact and np.any(abs(q) > np.pi + 1e-8):
+                raise PathError("CONTACT_LIMIT", "continuous fold bound")
+        return q, tangent, c
 
-        mag_x2, mag_x3 = np.sqrt(max(0, x2_sq)), np.sqrt(max(0, x3_sq))
+    def _name(self, c, rank, component):
+        if self.is_euclidean and c.mode_id and c.mode_id.startswith("unique_e"):
+            return "E_" + c.mode_id
+        return (
+            c.mode_id or ("E" if self.is_euclidean else "NE") + "_mode%d" % (rank + 1)
+        ) + "_c%d" % component
 
-        LHS34 = np.cos(a1) * (1+x3_sq) * (1+x4**2)
-        T1_34 = np.cos(a4-a3-a2) * x4**2
-        T2_34 = np.cos(a4+a3-a2) * x3_sq
-        T3_34 = np.cos(a4-a3+a2) * x3_sq * x4**2
-        T4_34 = np.cos(a4+a3+a2)
-        P34 = (LHS34 - (T1_34 + T2_34 + T3_34 + T4_34)) / (4 * np.sin(a4) * np.sin(a2))
+    def _seed_checks(self, lo, hi, anchor, reference):
+        if self.geometry["euclidean_flat_foldable"] or (
+            reference
+            and all((c.mode_id or "").startswith("collinear_") for c in reference)
+        ):
+            return 0
+        good = 0
+        for t in np.linspace(
+            lo + 0.13 * (hi - lo), hi - 0.13 * (hi - lo), self.max_seeds
+        ):
+            self.metrics["seed_attempts"] += 1
+            cs = self._solve(t)
+            try:
+                reached = []
+                for c in cs:
+                    q, _, _ = self._advance(c.rhos, float(t), anchor)
+                    distances = [
+                        np.linalg.norm(wrap_angle(q - r.rhos)) for r in reference
+                    ]
+                    if not distances or min(distances) > 1e-6:
+                        raise PathError("AMBIGUOUS", "seed disagrees with reference")
+                    reached.append(int(np.argmin(distances)))
+                if len(set(reached)) != len(reached):
+                    raise PathError("AMBIGUOUS", "seeds collapse onto one path")
+            except PathError:
+                continue
+            if cs:
+                good += 1
+                self.metrics["seed_checks"] += 1
+            if good >= self.seed_count:
+                return good
+        raise PathError("NUMERICAL_FAILURE", "insufficient valid interior seeds")
 
-        sign_x3 = np.sign(P34 * x4) if abs(x4) > self.TOLERANCE else np.sign(P34)
-        if sign_x3 == 0:
-            sign_x3 = 1
-        x3 = sign_x3 * mag_x3
-        rho3 = 2 * np.arctan(x3)
+    def run_simulation(self, resolution=1000):
+        if (
+            isinstance(resolution, bool)
+            or int(resolution) != resolution
+            or resolution < 8
+        ):
+            raise ValueError("resolution must be an integer >=8")
+        start = time.perf_counter()
+        self.branches = {}
+        self._cache.clear()
+        self._status_cache.clear()
+        self.metrics = dict(solve_calls=0, seed_attempts=0, seed_checks=0)
+        grid = np.linspace(-np.pi + 1e-6, np.pi - 1e-6, int(resolution))
+        all_rows = []
+        canonical = min(
+            range(4), key=lambda k: tuple(np.roll(self.original_alphas_deg, -k))
+        )
+        order = np.roll(np.arange(4), -canonical)
+        self._drive_domains = self._domains()
+        for component, (lo, hi) in enumerate(self._drive_domains):
+            anchor = float(np.clip(0.071, lo + 0.2 * (hi - lo), hi - 0.2 * (hi - lo)))
+            cs = sorted(
+                self._solve(anchor), key=lambda c: tuple(np.round(c.rhos[order], 11))
+            )
+            checks = self._seed_checks(lo, hi, anchor, cs)
+            for rank, c in enumerate(cs):
+                bid = self._name(c, rank, component)
+                if bid in self.branches:
+                    bid += "_c%d" % component
+                seed = c.rhos.copy()
+                rows = [seed]
+                ends = []
+                reached = {}
+                for direction in (-1, 1):
+                    q, t, tangent = seed.copy(), anchor, None
+                    targets = sorted(
+                        [
+                            x
+                            for x in grid
+                            if lo < x < hi and direction * (x - anchor) > 0
+                        ],
+                        reverse=direction < 0,
+                    )
+                    for goal in targets:
+                        try:
+                            q, tangent, _ = self._advance(q, t, float(goal), tangent)
+                            t = float(goal)
+                            rows.append(q.copy())
+                        except PathError as exc:
+                            ends.append(Endpoint(t, exc.reason, str(exc)))
+                            reached[direction] = t
+                            break
+                    else:
+                        boundary = lo if direction < 0 else hi
+                        reached[direction] = boundary
+                        ends.append(
+                            Endpoint(
+                                boundary,
+                                (
+                                    "DOMAIN_END"
+                                    if abs(abs(boundary) - np.pi) < 1e-8
+                                    else "DRIVE_EXTREMUM"
+                                ),
+                            )
+                        )
+                rows = np.array(sorted(rows, key=lambda q: q[self.drive_index]))
+                all_rows.extend(rows)
+                physical = self._contact_pieces(rows)
+                mask = np.all(abs(rows) <= np.pi + 1e-8, axis=1)
+                for ix in np.flatnonzero(np.diff(mask.astype(int))):
+                    inside, outside = (
+                        (rows[ix], rows[ix + 1])
+                        if mask[ix]
+                        else (rows[ix + 1], rows[ix])
+                    )
+                    ti, to = float(inside[self.drive_index]), float(
+                        outside[self.drive_index]
+                    )
+                    incoming = (outside - inside) / (to - ti)
+                    resolved = True
+                    for _ in range(22):
+                        mid = (ti + to) / 2
+                        try:
+                            qm, _, _ = self._advance(
+                                inside, float(inside[self.drive_index]), mid, incoming
+                            )
+                        except PathError as exc:
+                            ends.append(
+                                Endpoint(
+                                    ti, exc.reason, "contact boundary: " + str(exc)
+                                )
+                            )
+                            resolved = False
+                            break
+                        if np.max(abs(qm)) <= np.pi:
+                            ti = mid
+                        else:
+                            to = mid
+                    if resolved:
+                        ends.append(
+                            Endpoint(
+                                ti,
+                                "CONTACT_LIMIT",
+                                "continuous-angle boundary, bracket <1e-7 rad",
+                            )
+                        )
+                self.branches[bid] = Branch(
+                    bid,
+                    c.mode_id or bid,
+                    rows,
+                    seed,
+                    self._split(rows),
+                    ends,
+                    physical_segments=physical,
+                    seed_checks=checks,
+                    reachable_intervals=[(reached[-1], reached[1])],
+                    admissible_domain=(lo, hi),
+                )
+        self._add_families(int(resolution))
+        self._connect_seams()
+        # Raw kinematic space is independent of branch tracing failures.
+        raw = [c.rhos for t in grid for c in self._solve(t)]
+        raw.extend(
+            q for b in self.branches.values() if b.family is not None for q in b.states
+        )
+        self.full_math_data = np.asarray(raw).reshape(-1, 4)
+        regular = [b for b in self.branches.values() if b.family is None]
+        for i in range(2):
+            b = regular[i] if i < len(regular) else None
+            setattr(
+                self,
+                "math_branch%d" % (i + 1),
+                b.states.copy() if b else np.empty((0, 4)),
+            )
+            setattr(
+                self,
+                "branch%d" % (i + 1),
+                (
+                    np.vstack(b.physical_segments)
+                    if b and b.physical_segments
+                    else np.empty((0, 4))
+                ),
+            )
+        self.metrics["run_seconds"] = time.perf_counter() - start
+        if self.verbose:
+            print(
+                self.geom_type,
+                self.geometry,
+                "branches",
+                list(self.branches),
+                self.metrics,
+            )
+        return self
 
-        LHS12 = np.cos(a3) * (1+x1**2) * (1+x2_sq)
-        T1_12 = np.cos(a2-a1-a4) * x2_sq
-        T2_12 = np.cos(a2+a1-a4) * x1**2
-        T3_12 = np.cos(a2-a1+a4) * x1**2 * x2_sq
-        T4_12 = np.cos(a2+a1+a4)
-        P12 = (LHS12 - (T1_12 + T2_12 + T3_12 + T4_12)) / (4 * np.sin(a2) * np.sin(a4))
+    def _connect_seams(self):
+        """Record verified periodic adjacency without merging actuation segments."""
+        regular = [b for b in self.branches.values() if b.family is None]
+        parents = {b.id: b.id for b in regular}
 
-        if abs(x1) > self.TOLERANCE:
-            sign_x2 = np.sign(P12 * x1)
-        else:
-            LHS23 = np.cos(a4) * (1+x2_sq) * (1+x3_sq)
-            T1_23 = np.cos(a3-a2-a1) * x3_sq
-            T2_23 = np.cos(a3+a2-a1) * x2_sq
-            T3_23 = np.cos(a3-a2+a1) * x2_sq * x3_sq
-            T4_23 = np.cos(a3+a2+a1)
-            P23 = (LHS23 - (T1_23 + T2_23 + T3_23 + T4_23)) / (4 * np.sin(a3) * np.sin(a1))
-            sign_x2 = np.sign(P23 * x3) 
+        def find(key):
+            while parents[key] != key:
+                key = parents[key]
+            return key
 
-        if sign_x2 == 0:
-            sign_x2 = 1
-        x2 = sign_x2 * mag_x2
-        rho2 = 2 * np.arctan(x2)
+        eps = 1e-4
+        for b in regular:
+            if b.reachable_intervals[0][1] < np.pi - 1e-8 or len(b.states) < 2:
+                continue
+            q0, q1 = b.states[-2:]
+            t0, t1 = q0[self.drive_index], q1[self.drive_index]
+            tangent = (q1 - q0) / (t1 - t0)
+            try:
+                continued, _, _ = self._advance(q1, t1, np.pi + eps, tangent)
+            except PathError:
+                continue
+            matches = []
+            for other in regular:
+                if (
+                    other.reachable_intervals[0][0] > -np.pi + 1e-8
+                    or len(other.states) < 2
+                ):
+                    continue
+                a, c = other.states[:2]
+                ta, tc = a[self.drive_index], c[self.drive_index]
+                try:
+                    opposite, _, _ = self._advance(
+                        a, ta, -np.pi + eps, (c - a) / (tc - ta)
+                    )
+                except PathError:
+                    continue
+                if np.linalg.norm(wrap_angle(continued - opposite)) < 1e-6:
+                    matches.append(other)
+            if len(matches) == 1:
+                other = matches[0]
+                b.seam_connections["positive"] = other.id
+                other.seam_connections["negative"] = b.id
+                left, right = find(b.id), find(other.id)
+                parents[max(left, right)] = min(left, right)
+        for b in regular:
+            b.mode_id = find(b.id)
 
-        return np.roll([rho1, rho2, rho3, rho_drive], -self.shift_amount)
+    def _add_families(self, resolution):
+        seen = set()
+        for t in (-np.pi, 0.0, np.pi):
+            self._core.solve(t)
+            for f in self._core.last_families:
+                key = (f["mode_id"], round(float(t), 9))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows = []
+                for free in np.linspace(-np.pi, np.pi, resolution):
+                    c = f["evaluate"](float(free))
+                    if c is not None:
+                        q = c.rhos.copy()
+                        q[self.drive_index] = float(t)
+                        rows.append(q)
+                if not rows:
+                    continue
+                rows = np.array(rows)
+                bid = f["mode_id"] + (
+                    "_minus_pi" if t < -3 else "_plus_pi" if t > 3 else ""
+                )
+                self.branches[bid] = Branch(
+                    bid,
+                    bid,
+                    rows,
+                    rows[len(rows) // 2].copy(),
+                    [rows],
+                    [Endpoint(t, "DRIVE_EXTREMUM", "fixed-drive continuum")],
+                    f,
+                    self._contact_pieces(rows),
+                    reachable_intervals=[(t, t)],
+                )
+
+    def _split(self, rows):
+        if not len(rows):
+            return []
+        principal = wrap_angle(rows)
+        if len(rows) == 1:
+            return [principal]
+        dif = np.diff(rows[:, self.drive_index])
+        gap = max(0.05, 3 * np.median(abs(dif)))
+        cuts = (
+            np.flatnonzero(
+                (np.max(abs(np.diff(principal, axis=0)), axis=1) > np.pi)
+                | (abs(dif) > gap)
+            )
+            + 1
+        )
+        return [p for p in np.split(principal, cuts) if len(p)]
+
+    def _contact_pieces(self, rows):
+        if not len(rows):
+            return []
+        good = np.all(abs(rows) <= np.pi + 1e-8, axis=1)
+        runs = np.split(
+            np.arange(len(rows)), np.flatnonzero(np.diff(good.astype(int))) + 1
+        )
+        return [rows[ix] for ix in runs if len(ix) and good[ix[0]]]
+
+    def plot_data(self, branch_id, contact=None):
+        b = self.branches[branch_id]
+        bounded = self.contact if contact is None else contact
+        return [
+            s
+            for p in (b.physical_segments if bounded else [b.states])
+            for s in self._split(p)
+        ]
+
+    def create_session(self, branch=None, contact=None):
+        if not self.branches:
+            self.run_simulation()
+        if not self.branches:
+            raise PathError("NO_SOLUTION")
+        branch = next(iter(self.branches)) if branch is None else branch
+        if branch not in self.branches:
+            raise ValueError("Unknown branch " + str(branch))
+        return SimulationSession(
+            self, branch, self.contact if contact is None else contact
+        )
+
+    def compute_folding_angles_from_input_output(
+        self, input_angle_deg, output_index, sign=1, verbose=False, branch=None
+    ):
+        if not isinstance(output_index, (int, np.integer)) or output_index not in range(
+            4
+        ):
+            raise ValueError("output_index must be 0..3")
+        if output_index == self.drive_index or sign not in (-1, 1):
+            raise ValueError("output must differ from drive; sign must be +/-1")
+        angles = np.deg2rad(np.atleast_1d(input_angle_deg).astype(float))
+        if not np.all(np.isfinite(angles)):
+            raise ValueError("finite angles required")
+        solutions = []
+        for t in angles:
+            if branch is None:
+                cs = [c.rhos for c in self._solve(t)]
+            else:
+                try:
+                    cs = [self.create_session(branch).move_to(t).rhos]
+                except PathError:
+                    cs = []
+            solutions.append(
+                [
+                    q
+                    for q in cs
+                    if abs(t) < 1e-12 or np.sign(q[output_index]) == sign * np.sign(t)
+                ]
+            )
+        count = max([len(s) for s in solutions] + [0])
+        out = np.full((len(angles), count), np.nan)
+        full = np.full((len(angles), count, 4), np.nan)
+        for i, ss in enumerate(solutions):
+            for j, q in enumerate(ss):
+                out[i, j] = q[output_index]
+                full[i, j] = q
+        return dict(
+            input_angles=angles,
+            output_angles=out,
+            folding_angles_all=full,
+            num_solutions=np.array([len(s) for s in solutions]),
+        )
 
     def _unwrap_filter(self, path, step_size):
-        """Unwrap engine: cutoff the path over folding angle pi"""
-        if len(path) == 0: return np.empty((0, 4))
-        path = np.array(path)
-        
-        d_idx = self.driving_crease - 1
-        diffs = np.abs(np.diff(path[:, d_idx]))
-        split_indices = np.where(diffs > 2.0 * step_size)[0] + 1
-        blocks = np.split(path, split_indices)
-        
-        valid_blocks = []
-        for blk in blocks:
-            if len(blk) == 0: continue
-            unwrapped = np.unwrap(blk, axis=0)
-            anchor_idx = np.argmin(np.sum(np.abs(blk), axis=1))
-            for col in range(4):
-                shift = np.round(unwrapped[anchor_idx, col] / (2*np.pi)) * (2*np.pi)
-                unwrapped[:, col] -= shift
-            valid_mask = np.all(np.abs(unwrapped) <= np.pi + 1e-4, axis=1)
-            if np.any(valid_mask): valid_blocks.append(blk[valid_mask])
-            
-        return np.vstack(valid_blocks) if valid_blocks else np.empty((0, 4))
+        q = np.asarray(path, float).reshape(-1, 4)
+        return q[np.all(abs(q) <= np.pi + 1e-8, axis=1)]
 
-    def get_mv_pattern(self, rhos):
-        """Get rhos, change into M/V/F string (ex 'MVVV') for Euclidean case"""
-        return "".join(["V" if r > 1e-4 else "M" if r < -1e-4 else "F" for r in rhos])
-
-    
-    # --- [Computation Methods] ---
-    def run_simulation(self, resolution=1000):
-        """Path calculation & find physical path"""
-        rho_drive_range = np.linspace(-np.pi + 1e-4, np.pi - 1e-4, resolution)
-        step_size = (2 * np.pi) / resolution
-        
-        raw_m1, raw_m2 = [], []
-        prev_r1_m1, prev_r1_m2 = None, None
-        
-        for rho_drive in rho_drive_range:
-            rho1_sols = self._solve_quadratic_rho1(rho_drive)
-            if not rho1_sols:
-                prev_r1_m1, prev_r1_m2 = None, None
-                continue
-                
-            # Nearest Neighbor Tracking
-            if len(rho1_sols) == 2:
-                if prev_r1_m1 is None: r1_m1, r1_m2 = rho1_sols[0], rho1_sols[1]
-                else:
-                    d_stay = abs(rho1_sols[0]-prev_r1_m1) + abs(rho1_sols[1]-prev_r1_m2)
-                    d_swap = abs(rho1_sols[1]-prev_r1_m1) + abs(rho1_sols[0]-prev_r1_m2)
-                    r1_m1, r1_m2 = (rho1_sols[0], rho1_sols[1]) if d_stay <= d_swap else (rho1_sols[1], rho1_sols[0])
-                prev_r1_m1, prev_r1_m2 = r1_m1, r1_m2
-                tracked = [(0, r1_m1), (1, r1_m2)]
-            else:
-                tracked = [(0, rho1_sols[0])]
-                prev_r1_m1 = rho1_sols[0]
-                
-            for m_idx, r1 in tracked:
-                res_rhos = self.solve_full_rhos_from_drive_and_rho1(rho_drive, r1)
-                if res_rhos is None:
-                    continue
-                if m_idx == 0: raw_m1.append(res_rhos)
-                else: raw_m2.append(res_rhos)
-        
-        # Kinematic path without contact  
-        self.full_math_data = np.vstack([raw_m1, raw_m2]) if raw_m1 or raw_m2 else []
-        d_idx = self.driving_crease - 1
-        
-        # ---Euclidean case: M/V pattern classification (two branch clustering)---
-        if self.is_euclidean:
-            all_rhos = raw_m1 + raw_m2
-            branch_dict = {}
-            leftovers = []
-            
-            for rhos in all_rhos:
-                pat = self.get_mv_pattern(rhos)
-                if 'F' in pat: continue 
-                
-                # Find minority index with different M/V pattern'
-                m_count, v_count = pat.count('M'), pat.count('V')
-                if m_count == 1:
-                    idx = pat.find('M')
-                    if idx not in branch_dict: branch_dict[idx] = []
-                    branch_dict[idx].append(rhos)
-                elif v_count == 1:
-                    idx = pat.find('V')
-                    if idx not in branch_dict: branch_dict[idx] = []
-                    branch_dict[idx].append(rhos)
-                else:
-                    leftovers.append(rhos)
-                
-            # Extract two branch data with the most collected data
-            sorted_patterns = sorted(branch_dict.keys(), key=lambda k: len(branch_dict[k]), reverse=True)
-            raw_m1 = branch_dict[sorted_patterns[0]] if len(sorted_patterns) >= 1 else []
-            raw_m2 = branch_dict[sorted_patterns[1]] if len(sorted_patterns) >= 2 else []
-            
-            # Collect singular cases
-            self.singular_states = sorted(leftovers, key=lambda x: x[d_idx]) if leftovers else []
-            
-            # Console print
-            if len(sorted_patterns) >= 1:
-                sample_pat_1 = self.get_mv_pattern(raw_m1[len(raw_m1)//2])
-                print(f"  -> Branch 1 assigned to Minority Index [{sorted_patterns[0]}] (e.g. {sample_pat_1})")
-            if len(sorted_patterns) >= 2:
-                sample_pat_2 = self.get_mv_pattern(raw_m2[len(raw_m2)//2])
-                print(f"  -> Branch 2 assigned to Minority Index [{sorted_patterns[1]}] (e.g. {sample_pat_2})")
-            if len(self.singular_states) > 0:
-                print(f"  -> Separated {len(self.singular_states)} transition/singular states (stored in self.singular_states)")
-            
-        # --- Data save & unwarp ---
-        # Align original data so that lines do not get twisted while drawing
-        
-        if len(raw_m1) > 0: raw_m1 = sorted(raw_m1, key=lambda x: x[d_idx])
-        if len(raw_m2) > 0: raw_m2 = sorted(raw_m2, key=lambda x: x[d_idx])
-        
-        self.branch1 = self._unwrap_filter(raw_m1, step_size)
-        self.branch2 = self._unwrap_filter(raw_m2, step_size)
-        
-        self.math_branch1 = np.array(raw_m1) if len(raw_m1) > 0 else [] # for 3d interactive
-        self.math_branch2 = np.array(raw_m2) if len(raw_m2) > 0 else []
-
-    
-    def compute_folding_angles_from_input_output(self, input_angle_deg, output_index, sign = 1, verbose=False):
-        # input_angle_deg: single float or list[float]
-        # if sign +1: input/output angle same sign, -1: different sign 
-        
-        # Input index validation
-        if not isinstance(output_index, int) or output_index not in [0, 1, 2, 3]:
-            raise ValueError(f"output_index must be 0~3, got {output_index}")
-        if sign not in [1, -1]:
-            raise ValueError(f"sign must be 1 or -1, got {sign}")
-        if self.driving_crease - 1 == output_index:
-            raise ValueError("input_index와 output_index가 같을 수 없습니다")
-        
-        input_angles_rad = np.deg2rad(np.atleast_1d(input_angle_deg))
-        n = len(input_angles_rad)
-        
-        output_angles_rad = np.full(n, np.nan)
-        folding_angles_all = np.full((n, 4), np.nan)
-        num_solutions = np.zeros(n, dtype=int)           # num of solutions for each input angle
-                
-        if verbose:
-            print(f"Computing rho0 → rho{output_index} | sign = {sign} | n = {n}")
-
-        valid_count = 0
-        for i, rho_input in enumerate(input_angles_rad):
-            try:
-                rho1_solutions = self._solve_quadratic_rho1(rho_input)
-                if len(rho1_solutions) == 0:
-                    continue
-
-                solutions = [] # All solutions that satisfy condition in input angle
-                for rho1_candidate in rho1_solutions:
-                    full_rhos = self.solve_full_rhos_from_drive_and_rho1(rho_input, rho1_candidate)
-                    if full_rhos is None:
-                        continue
-
-                    out_val = full_rhos[output_index]
-                    # if input closer to zero, hard to sign comparison, choose first valid solution
-                    if abs(rho_input) < self.TOLERANCE:
-                        solutions.append(full_rhos)
-                        continue
-
-                    signs_match = (np.sign(out_val) == np.sign(rho_input))
-                    if (sign == 1 and signs_match) or (sign == -1 and not signs_match):
-                        solutions.append(full_rhos)
-
-                if len(solutions) == 0:
-                    continue
-                
-                if len(solutions) > 1 and verbose:
-                    print(f"  Input {np.rad2deg(rho_input):.2f}°: "
-                      f"{len(solutions)} solutions found!")
-                    for j, sol in enumerate(solutions):
-                        print(f"    Branch {j+1}: output={np.rad2deg(sol[output_index]):.2f}°")
-                
-                for j, sol in enumerate(solutions):
-                    output_angles_rad[i, j] = sol[output_index]
-                    folding_angles_all[i, j, :] = sol
-                
-                num_solutions[i] = len(solutions)
-                valid_count += 1
-                
-            except:
-                continue
-        
-        if verbose:
-            print(f"  Valid points: {valid_count}/{n}")
-            multi_sol = np.sum(num_solutions > 1)
-            if multi_sol > 0:
-                print(f" Multiple solutions found: {multi_sol} points")
-        
-        return {
-            'input_angles': input_angles_rad,
-            'output_angles': output_angles_rad,
-            'folding_angles_all': folding_angles_all,
-            'num_solutions': num_solutions,
-        }
-        
-        
-    # --- [Visualization Methods] ---
-    def plot_2d_static(self):
-        """Static configuration plot (FIG.3. in paper, x axis - rho1)"""
-        fig, ax = plt.subplots(figsize=(8,8))
-        
-        d_idx = self.driving_crease - 1
-        other_indices = [i for i in range(4) if i != d_idx]
-        labels = [r'$\rho_2$', r'$\rho_3$', r'$\rho_4$']
-        colors = ['blue', 'green', 'red']
-        
-        if self.contact:
-            # --- [Case 1] Contact = True ---
-            if len(self.full_math_data) > 0:
-                for j in range(3):
-                    ax.scatter(self.full_math_data[:,0], self.full_math_data[:,j+1], color=colors[j], s=2, alpha = 0.05) # alpha < 1 to make it blurry
-                    
-            for data in [self.branch1, self.branch2]:
-                if len(data) == 0: continue
-                for j in range(3):
-                    ax.scatter(data[:,0], data[:,j+1], color=colors[j], label=f"{labels[j]}", s=8, alpha = 1.0)
-            ax.set_title(f"2D Trajectory (Contact = True)\nSolid: self-interation O / Faded: self-interation X")
-        
-        else:
-            # --- [Case 2] Contact = False ---
-            if len(self.full_math_data) > 0:
-                for j in range(3):
-                    ax.scatter(self.full_math_data[:,0], self.full_math_data[:,j+1], color=colors[j], label=f"{labels[j]}", s=8, alpha = 1.0)
-            ax.set_title(f"2D Trajectory (Contact = False)\nFull Kinematic Space (Ignored Physical Bounds)")                
-        ax.set_xlabel(r"$\rho_1$ [rad]")
-        ax.set_ylabel(r"Folding Angles $\rho_2, \rho_3, \rho_4$ [rad]")     
-        ax.set_xlim([-np.pi, np.pi])
-        ax.set_ylim([-np.pi, np.pi])
-        ax.set_aspect('equal')
-        
-        pi_ticks = [-np.pi, -np.pi/2, 0, np.pi/2, np.pi]
-        pi_tick_labels = [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$']      
-        ax.set_xticks(pi_ticks)
-        ax.set_xticklabels(pi_tick_labels)
-        ax.set_yticks(pi_ticks)
-        ax.set_yticklabels(pi_tick_labels)
-        
-        ax.axhline(0, color='black', linewidth=1)
-        ax.axvline(0, color='black', linewidth=1)
-        ax.grid(True, linestyle='--', alpha = 0.6)
-        
-        handles, labels_leg = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels_leg, handles))
-        if by_label:
-            ax.legend(by_label.values(), by_label.keys(), loc='best', fontsize='small')
-
-        plt.tight_layout()
-        plt.show()
-
-    def show_animated_2d_plot(self, interval=0.001, skip_step=10): ## Can use when (contact = True)
-        """
-        Check dynamic orbit with real-time dot pointing
-        interval: time between pointing
-        skip_step: # of steps to skip for enhanced animation speed
-        """
-        # total animation time = (resolution / skip_step) * interval
-        
-        # --- Contact validation---
-        if not self.contact:
-            print(" [Notice] Animation is a tool for checking the folding until contact ")
-            print("        When contact=False, use plot_2d_static() ")
-            return
-        # -----------------------------------
-    
-        if len(self.branch1) == 0 and len(self.branch2) == 0:
-            print("No data for visualization. First, run run_simulation()")
-            return
-        
-        # Activate interactive mode (real-time renewal)
-        plt.ion()
-        fig, ax = plt.subplots(figsize=(8, 8))
-        
-        colors = ['blue', 'green', 'red']
-        labels = [r'$\rho_2$', r'$\rho_3$', r'$\rho_4$']
-        
-        ax.set_xlim([-np.pi, np.pi])
-        ax.set_ylim([-np.pi, np.pi])
-        ax.axhline(0, color='black', lw=1)
-        ax.axvline(0, color='black', lw=1)
-        ax.grid(True, ls='--', alpha=0.5)
-        ax.set_title(f"2D Kinematic Propagation (Driving e{self.driving_crease})")
-        ax.set_xlabel(r"$\rho_1$ (rad)")
-        ax.set_ylabel(r"Folding Angles (rad)")
-
-        # --- Animate each branch sequentially---
-        for data_idx, data in enumerate([self.branch1, self.branch2]):
-            if len(data) == 0: continue
-            
-            for i in range(0, len(data), skip_step):
-                for j in range(3):
-                    # rho1 vs (rho2, rho3, rho4)
-                    ax.scatter(data[i, 0], data[i, j+1], color=colors[j], s=5, alpha=0.8)
-                
-                plt.pause(interval)
-        
-        print("End animation.")
-        plt.ioff()
-        plt.show()
-    
     def _rodrigues_rotation_matrix(self, axis, angle):
-        """[utility] rotation matrix amount angle with axis"""
-        norm = np.linalg.norm(axis)
-        if norm < 1e-9: return np.eye(3)
-        axis = axis / norm
-        K = np.array([[0, -axis[2], axis[1]],
-                      [axis[2], 0, -axis[0]],
-                      [-axis[1], axis[0], 0]])
-        return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-    
+        return rotation(axis, angle)
+
     def get_3d_geometry(self, rhos_rad):
-        """Calculate 4 planes coordinates with present folding angles"""
-        a1, a2, a3, a4 = self.original_alphas 
-        r1, r2, r3, r4 = rhos_rad
-        origin = np.array([0.0, 0.0, 0.0])
-        
-        v4 = np.array([1.0, 0.0, 0.0]) 
-        v1 = np.array([np.cos(a4), np.sin(a4), 0.0])
-        
-        v2_flat = np.array([np.cos(a4 + a1), np.sin(a4 + a1), 0.0])
-        v2 = self._rodrigues_rotation_matrix(v1, r1) @ v2_flat
-        
-        v3_flat = np.array([np.cos(-a3), np.sin(-a3), 0.0])
-        v3_test_pos = self._rodrigues_rotation_matrix(v4, r4) @ v3_flat
-        v3_test_neg = self._rodrigues_rotation_matrix(v4, -r4) @ v3_flat
-        
-        err_pos = abs(np.dot(v2, v3_test_pos) - np.cos(a2))
-        err_neg = abs(np.dot(v2, v3_test_neg) - np.cos(a2))
-        
-        if abs(err_pos - err_neg) < 1e-6:
-            v3 = v3_test_pos if r1 >= 0 else v3_test_neg
-        elif err_pos < err_neg:
-            v3 = v3_test_pos
-        else:
-            v3 = v3_test_neg
-            
-        faces = [
-            [origin, v4, v1], # Face 4
-            [origin, v1, v2], # Face 1
-            [origin, v2, v3], # Face 2
-            [origin, v3, v4]  # Face 3
-        ]
-        vertices = np.array([origin, v1, v2, v3, v4])
-        return faces, vertices
-    
-    
-    def show_3d_interactive(self):
+        q = np.asarray(rhos_rad, float)
+        if q.shape != (4,) or not np.isfinite(q).all():
+            raise ValueError("four finite folds required")
+        if closure_error(self.original_alphas, q) > max(self._core.residual_tol, 1e-7):
+            raise ValueError("folding angles do not satisfy rotation closure")
+        frame = rz(self.original_alphas[3])
+        vertices = [np.zeros(3), frame[:, 0].copy()]
+        for i in range(3):
+            frame = frame @ rx(q[i]) @ rz(self.original_alphas[i])
+            vertices.append(frame[:, 0].copy())
+        v = np.array(vertices)
+        return [
+            [v[0], v[4], v[1]],
+            [v[0], v[1], v[2]],
+            [v[0], v[2], v[3]],
+            [v[0], v[3], v[4]],
+        ], v
 
-        from matplotlib.widgets import Slider, RadioButtons, CheckButtons
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    def plot_2d_static(self, branch=None, contact=None, show=True):
+        import matplotlib.pyplot as plt
 
-        available_branches = []
-        if len(self.branch1) > 0 or len(self.math_branch1) > 0: available_branches.append('Branch 1')
-        if len(self.branch2) > 0 or len(self.math_branch2) > 0: available_branches.append('Branch 2')
-        
-        if not available_branches:
-            print("No data for visualization. First, run run_simulation()")
-            return
+        if not self.branches:
+            self.run_simulation()
+        fig, ax = plt.subplots(figsize=(8, 8))
+        for bid in ([branch] if branch else self.branches):
+            for p in self.plot_data(bid, contact):
+                for j in range(4):
+                    if j != self.drive_index:
+                        ax.plot(
+                            p[:, self.drive_index],
+                            p[:, j],
+                            label=bid + " e%d" % (j + 1),
+                        )
+        ax.set(
+            xlim=(-np.pi, np.pi),
+            ylim=(-np.pi, np.pi),
+            xlabel="rho%d [rad]" % self.driving_crease,
+            ylabel="fold angle [rad]",
+        )
+        ax.grid(True)
+        if show:
+            plt.show()
+        return fig
 
-        fig = plt.figure(figsize=(15, 7))
-        
-        ax_3d = fig.add_axes([0.02, 0.25, 0.45, 0.65], projection='3d')
-        ax_3d.set_xlim([-1, 1]); ax_3d.set_ylim([-1, 1]); ax_3d.set_zlim([-1, 1])
-        ax_3d.set_xlabel('X'); ax_3d.set_ylabel('Y'); ax_3d.set_zlabel('Z')
-        
-        ax_2d = fig.add_axes([0.55, 0.25, 0.4, 0.65])
-        ax_2d.set_xlim([-np.pi, np.pi]); ax_2d.set_ylim([-np.pi, np.pi])
-        ax_2d.axhline(0, color='black', lw=1); ax_2d.axvline(0, color='black', lw=1)
-        ax_2d.grid(True, ls='--', alpha=0.5)
-        ax_2d.set_xlabel(f"Driving Angle (e{self.driving_crease}) [rad]")
-        ax_2d.set_ylabel("Folding Angles [rad]")
+    def show_animated_2d_plot(self, interval=0.001, skip_step=10):
+        import matplotlib.pyplot as plt
 
-        best_idx = self.driving_crease - 1
-        other_indices = [i for i in range(4) if i != best_idx]
-        labels = [f"$e_{i+1}$" for i in range(4) if i != best_idx]
-        colors = ['blue', 'green', 'red']
-        
-        ui_state = {'branch': available_branches[0], 'contact': self.contact}
-        def get_active_data():
-            if ui_state['branch'] == 'Branch 1': return self.branch1 if ui_state['contact'] else self.math_branch1
-            else: return self.branch2 if ui_state['contact'] else self.math_branch2
-
-        init_data = get_active_data()
-        init_rhos = init_data[len(init_data) // 2]
-
-        # 3D reset
-        faces, vertices = self.get_3d_geometry(init_rhos)
-        face_colors = ['lightgray', 'lightblue', 'lightgreen', 'lightcoral']
-        poly3d = Poly3DCollection(faces, facecolors=face_colors, edgecolors='black', linewidths=2, alpha=0.8)
-        ax_3d.add_collection3d(poly3d)
-        scatter_3d = ax_3d.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], color='black', s=50)
-
-        # 2D reset
-        colors = ['blue', 'green', 'red']
-        bg_lines = [ax_2d.plot([], [], color=colors[j], label = labels[j], lw=2, alpha=0.4)[0] for j in range(3)]
-        tracker_pts = [ax_2d.scatter([], [], color=c, s=100, edgecolors='black', zorder=5) for c in colors]
-        tracker_vline = ax_2d.axvline(x=init_rhos[best_idx], color='gray', linestyle='--', alpha=0.7, zorder=1)
-        sing_lines = [ax_2d.plot([], [], color=c, lw=2.0, linestyle='--', alpha=0.35, zorder=3)[0] for c in colors] # Singular lines
-
-        def redraw_2d_background():
-            data = get_active_data()
-            if len(data) == 0: return
-            sorted_data = data[np.argsort(data[:, best_idx])]
-            
-            if ui_state['contact']:
-                l_width, l_alpha = 3.5, 0.95  # Contact=True: bold and dark
-            else:
-                l_width, l_alpha = 2.0, 0.4   # Contact=False: thin and light
-                
-            for j in range(3):
-                y_idx = other_indices[j]
-                bg_lines[j].set_data(sorted_data[:, best_idx], sorted_data[:, y_idx])
-                bg_lines[j].set_linewidth(l_width); bg_lines[j].set_alpha(l_alpha)
-            
-            # --- Display conditional singularities ---
-            data_rhos = data[:, best_idx]
-            # Whether path covers (-pi ~ pi) (if over 6.0 rad, treated as fully defined)
-            is_fully_defined = (data_rhos.max() - data_rhos.min()) >= 6.0
-            
-            show_singular = (not ui_state['contact']) and (not is_fully_defined) and hasattr(self, 'singular_states') and len(self.singular_states) > 0
-            
-            if show_singular:
-                sing_data = np.array(self.singular_states)
-                s_sorted = sing_data[np.argsort(sing_data[:, best_idx])]
-                # add 'NaN' if there's long horizontal gap for clear plot
-                x_vals = s_sorted[:, best_idx]
-                gap_indices = np.where(np.diff(x_vals) > 1.0)[0] + 1
-                
-                for j in range(3):
-                    y_idx = other_indices[j]
-                    y_vals = s_sorted[:, y_idx]
-                    
-                    x_plot = np.insert(x_vals, gap_indices, np.nan)
-                    y_plot = np.insert(y_vals, gap_indices, np.nan)
-                    
-                    sing_lines[j].set_data(x_plot, y_plot)
-                    sing_lines[j].set_visible(True)
-            else:
-                for j in range(3):
-                    sing_lines[j].set_visible(False)
-            # ----------------------------------------
-
-            title_c = "Physical Bound" if ui_state['contact'] else "Full Kinematic Space"
-            ax_2d.set_title(f"Configuration Space ({ui_state['branch']} / {title_c})")
-            ax_2d.legend(loc='upper right', fontsize='small', framealpha=0.7)
-            fig.canvas.draw_idle()
-
-        redraw_2d_background()
-
-        ax_radio = fig.add_axes([0.02, 0.02, 0.12, 0.15]) # radio for branch selecting
-        radio = RadioButtons(ax_radio, available_branches, active=0)
-        ax_slider = fig.add_axes([0.2, 0.1, 0.6, 0.03]) # main slider
-        slider = Slider(ax_slider, f'Fold (e{self.driving_crease})', -np.pi, np.pi, valinit=init_rhos[best_idx])
-        ax_check = fig.add_axes([0.85, 0.05, 0.11, 0.09]) # contact checkbox
-        check = CheckButtons(ax_check, ['Contact Bound'], [ui_state['contact']])
-
-        def update_all(val=None):
-            data = get_active_data()
-            if len(data) == 0: return
-            
-            target_val = slider.val
-            data_rhos = data[:, best_idx]
-            global_min, global_max = data_rhos.min(), data_rhos.max()
-            is_fully_defined = (global_max - global_min) >= 6.0 
-            
-            # --- Contact=False, combining singular states, set the global limit ---
-            if not ui_state['contact'] and hasattr(self, 'singular_states') and len(self.singular_states) > 0:
-                sing_rhos = np.array(self.singular_states)[:, best_idx]
-                global_min = min(global_min, sing_rhos.min())
-                global_max = max(global_max, sing_rhos.max())
-            # ---------------------------------------------------------------------------------
-            
-            is_clamped = False
-            if target_val < global_min or target_val > global_max:
-                slider.eventson = False 
-                target_val = np.clip(target_val, global_min, global_max)
-                slider.set_val(target_val)
-                slider.eventson = True
-                is_clamped = True
-
-            idx = np.abs(data_rhos - target_val).argmin()
-            current_rhos = data[idx]
-            display_x = current_rhos[best_idx]
-            is_singular = False
-
-            show_singular = (not ui_state['contact']) and (not is_fully_defined) and hasattr(self, 'singular_states') and len(self.singular_states) > 0
-            
-            # --- Through distance match, switch regular path and singular path ---
-            if show_singular:
-                sing_data = np.array(self.singular_states)
-                s_idx = np.abs(sing_data[:, best_idx] - target_val).argmin()
-                
-                dist_to_data = np.abs(display_x - target_val)
-                dist_to_sing = np.abs(sing_data[s_idx, best_idx] - target_val)
-                
-                # Snap when target_val closer to singular state than regular path
-                if np.abs(sing_data[s_idx, best_idx] - target_val) < 0.05:
-                    current_rhos = sing_data[s_idx]
-                    display_x = current_rhos[best_idx]
-                    is_singular = True
-            # ----------------------------------------------------------------------------
-
-            # title update
-            if is_singular:
-                ax_3d.set_title(f"??SINGULAR STATE (Transition) ??ne{self.driving_crease} = {np.rad2deg(display_x):.1f} deg", color='darkmagenta', fontweight='bold')
-            elif is_clamped:
-                bound_msg = "Contact Bound" if ui_state['contact'] else "Math Limit"
-                ax_3d.set_title(f"LIMIT REACHED! ({bound_msg})\ne{self.driving_crease} = {np.rad2deg(target_val):.1f} deg", color='red', fontweight='bold')
-            else:
-                # Contact off
-                ax_3d.set_title(f"Interactive 3D Fold\ne{self.driving_crease} = {np.rad2deg(display_x):.1f} deg", color='black')
-
-            # Renew 3D Geometry
-            new_faces, new_vertices = self.get_3d_geometry(current_rhos)
-            poly3d.set_verts(new_faces)
-            scatter_3d._offsets3d = (new_vertices[:, 0], new_vertices[:, 1], new_vertices[:, 2])
-            
-            # Renew 2D marker on plot
-            tracker_vline.set_xdata([display_x, display_x])
-            for j in range(3):
-                y_idx = other_indices[j]
-                tracker_pts[j].set_offsets([target_val, current_rhos[y_idx]])
-            fig.canvas.draw_idle()
-
-        def on_radio_click(label):
-            ui_state['branch'] = label
-            redraw_2d_background()
-            mid_val = get_active_data()[len(get_active_data()) // 2, best_idx]
-            slider.eventson = False; slider.set_val(mid_val); slider.eventson = True
-            update_all()
-
-        def on_check_click(label):
-            ui_state['contact'] = not ui_state['contact']
-            redraw_2d_background(); update_all()
-
-        slider.on_changed(update_all)
-        radio.on_clicked(on_radio_click)
-        check.on_clicked(on_check_click)
-
-        print("Starting Ultimate 3D Interactive Viewer...")
+        fig = self.plot_2d_static(show=False)
+        for b in self.branches.values():
+            for p in self.plot_data(b.id):
+                for q in p[::skip_step]:
+                    fig.axes[0].scatter(
+                        [q[self.drive_index]] * 3, np.delete(q, self.drive_index), s=5
+                    )
+                    plt.pause(interval)
         plt.show()
-                       
-        
-# --- Example ---
+        return fig
+
+    def show_3d_interactive(
+        self, branch=None, contact=None, show=True, wrap_margin=None
+    ):
+        from origami_viewer import create_viewer
+
+        if not self.branches:
+            self.run_simulation()
+        self._viewer = create_viewer(
+            self,
+            branch,
+            contact,
+            self.wrap_margin if wrap_margin is None else wrap_margin,
+            show=show,
+        )
+        return self._viewer
+
+
+class SimulationSession:
+    def __init__(self, sim, branch, contact):
+        self.sim, self.branch_id, self.contact = sim, branch, bool(contact)
+        self.branch = sim.branches[branch]
+        self.is_family = self.branch.family is not None
+        self.free_angle = 0.0
+        self.tangent = None
+        self.last_error = None
+        q = self.branch.seed_state.copy()
+        if self.is_family:
+            self.free_angle = float(q[self.branch.family["free_crease"] - 1])
+        self.state = self._state(q, float(q[sim.drive_index]), ())
+
+    def _state(self, q, t, events):
+        wrapped = float(wrap_angle(t))
+        if t > 0 and abs(wrapped + np.pi) < 2e-14:
+            wrapped = float(np.pi)
+        winding = int(round((t - wrapped) / TAU))
+        return State(
+            q.copy(),
+            float(t),
+            wrapped,
+            winding,
+            self.branch_id,
+            float(closure_error(self.sim.original_alphas, q)),
+            tuple(events),
+            self.sim.get_mv_pattern(q),
+        )
+
+    def move_to(self, target):
+        target = float(target)
+        if not np.isfinite(target):
+            raise ValueError("finite drive required")
+        if self.is_family:
+            if (
+                abs(float(wrap_angle(target - self.branch.family["fixed_drive"])))
+                > 1e-8
+            ):
+                raise PathError("DRIVE_EXTREMUM", "fixed-drive family")
+            return self.state
+        if self.contact and abs(target) > np.pi + 1e-10:
+            raise PathError("DOMAIN_END", "contact drive domain")
+        old = self.state
+        q, tangent, _ = self.sim._advance(
+            old.rhos, old.drive_unwrapped, target, self.tangent, self.contact
+        )
+        new = self._state(q, target, ())
+        if new.residual > 1e-7:
+            raise PathError("NUMERICAL_FAILURE", "closure residual")
+        events = []
+        if new.winding_count != old.winding_count:
+            events.append("ANGLE_WRAP")
+        if new.mv_pattern != old.mv_pattern:
+            events.append("MV_CHANGE")
+        new.events = tuple(events)
+        self.state, self.tangent = new, tangent
+        return new
+
+    def move_slider(self, raw_display):
+        return self.move_to(
+            float(raw_display) + (0 if self.contact else TAU * self.state.winding_count)
+        )
+
+    def move_family(self, free_angle):
+        if not self.is_family:
+            raise ValueError("not a fixed-drive family")
+        target = float(free_angle)
+        if not np.isfinite(target):
+            raise ValueError("finite free angle required")
+        q = self.state.rhos.copy()
+        index = self.branch.family["free_crease"] - 1
+        for goal in np.linspace(
+            self.free_angle,
+            target,
+            max(1, int(np.ceil(abs(target - self.free_angle) / 0.035))) + 1,
+        )[1:]:
+            c = self.branch.family["evaluate"](float(goal))
+            if c is None:
+                raise PathError("NUMERICAL_FAILURE", "family state")
+            q = lift_angles(c.rhos, q)
+            q[index] = float(goal)
+            if self.contact and np.any(abs(q) > np.pi + 1e-8):
+                raise PathError("CONTACT_LIMIT")
+        self.free_angle = target
+        self.state = self._state(q, self.state.drive_unwrapped, ("FAMILY_MOVE",))
+        return self.state
+
+    def set_contact(self, enabled):
+        if enabled and (
+            abs(self.state.drive_unwrapped) > np.pi + 1e-10
+            or np.any(abs(self.state.rhos) > np.pi + 1e-8)
+        ):
+            self.last_error = "CONTACT_LIMIT: continuous state outside bounds"
+            return False
+        self.contact = bool(enabled)
+        self.last_error = None
+        return True
+
+
 if __name__ == "__main__":
-    # Elliptic Case
-    #sector_angles = [80, 60, 100, 40]
-    # Hyperbolic Case
-    #sector_angles = [61, 91, 136, 76]
-    # Developable Case
-    #sector_angles = [60, 90, 135, 75]
-    # Folding table
-    #sector_angles = [112.5,112.5,90,135]
-    # Flat-foldable
-    sector_angles = [70, 70, 120, 110]
-    sim = OrigamiDegree4Simulator(sector_angles, contact=False)
-    sim.run_simulation(resolution=1000)
-    # Branch 1: input과 output 부호 동일
-    result_pos = sim.compute_folding_angles_from_input_output(
-        input_angle_deg=45, output_index=1, sign=1
+    import argparse
+
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--alphas", nargs=4, type=float, default=[70, 20, 110, 160])
+    p.add_argument("--drive", type=int, choices=range(1, 5))
+    p.add_argument("--resolution", type=int, default=1000)
+    p.add_argument("--branch")
+    p.add_argument("--no-contact", action="store_true")
+    p.add_argument("--no-show", action="store_true")
+    args = p.parse_args()
+    sim = OrigamiDegree4Simulator(
+        args.alphas, contact=not args.no_contact, driving_crease=args.drive
     )
-    # Branch 2: input과 output 부호 반대 (elliptic case 경우, input_index = 0 그 외 = 3)
-    result_neg = sim.compute_folding_angles_from_input_output(
-        input_angle_deg=45, output_index=1, sign=-1, verbose=True
-    )
-    print(result_neg) # (500, 4) dimension
-    
-    sim.plot_2d_static()
-    #sim.show_animated_2d_plot()
-    sim.show_3d_interactive()
+    sim.run_simulation(args.resolution)
+    sim.show_3d_interactive(branch=args.branch, show=not args.no_show)
