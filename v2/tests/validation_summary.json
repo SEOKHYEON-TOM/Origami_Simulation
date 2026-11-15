@@ -1,8 +1,8 @@
 {
   "python": "3.12.14",
   "tests": {
-    "passed": 38,
-    "seconds": 11.872,
+    "passed": 43,
+    "seconds": 11.981,
     "command": "python -m unittest discover -s v2/tests -v"
   },
   "headless_gui": true,
@@ -218,5 +218,36 @@
     "new_candidates": 5513,
     "maximum_closure": 2.1238136125231478e-15,
     "missing_valid_legacy": []
+  },
+  "symmetry_validation": {
+    "seed": 20261115,
+    "multistart_seed": 20261116,
+    "production_solver_sha256": "ca5cc8d100b709ffa455fa4606d8f6bf2ae93a8d35d67791fb812f7ebf68732e",
+    "numpy_version": "2.3.5",
+    "totals": {
+      "fixed_drive_samples": 2772,
+      "independent_scalar_comparisons": 2772,
+      "isolated_candidates": 4540,
+      "all_driver_state_comparisons": 18160,
+      "cyclic_reindex_comparisons": 13620,
+      "reflection_state_checks": 3012,
+      "fixed_drive_families": 44,
+      "family_evaluations": 924,
+      "nonlinear_least_squares_starts": 2304,
+      "nonlinear_fixed_drive_samples": 36,
+      "nonlinear_converged_starts": 2304,
+      "nonlinear_rejected_starts": 0,
+      "nonlinear_distinct_solutions": 72
+    },
+    "maxima": {
+      "independent_closure_frobenius": 2.2657799671986282e-15,
+      "reflected_closure_frobenius": 2.457583428003691e-15,
+      "family_closure_frobenius": 8.800209352108483e-16,
+      "nonlinear_solution_closure_frobenius": 1.2263056991268639e-11
+    },
+    "limits": "Finite samples and local multistart do not prove global completeness, connectivity or generic symbolic rules.",
+    "failure_count": 0,
+    "endpoint_false_negative_count": 0,
+    "endpoint_false_negatives_before_fix": 67
   }
 }

@@ -279,6 +279,7 @@ class Kinematics:
     def quadratic_roots(self, drive):
         """Internal rho1 roots. Projective infinity is the finite angle pi."""
         self.last_families = []
+        self._discriminant_roundoff = False
         if not np.isfinite(drive):
             raise ValueError("drive must be finite radians")
         if self.geometry["degenerate_sectors"]:
@@ -309,7 +310,6 @@ class Kinematics:
             self.last_status = "UNRESOLVED_DEGENERACY"
             return []
         A, B, C = abc / scale
-        eps = np.finfo(np.longdouble).eps
         # Exact coefficient zeros may be represented with float input errors.
         tol = np.longdouble(2e-15)
         roots = []
@@ -319,10 +319,14 @@ class Kinematics:
                 roots.append(float(2 * np.arctan2(-C, B)))
         else:
             delta = B * B - 4 * A * C
-            dtol = 64 * eps * (B * B + abs(4 * A * C)) + np.longdouble(2e-16)
+            # Geometry and the driving angle originate as float64, even when
+            # intermediate arithmetic uses longdouble. At a repeated root,
+            # using only longdouble epsilon rejects representable closed states.
+            dtol = 64 * np.finfo(float).eps * (B * B + abs(4 * A * C) + 1)
             if delta < -dtol:
                 self.last_status = "NO_SOLUTION"
                 return []
+            self._discriminant_roundoff = bool(delta < 0)
             delta = max(np.longdouble(0), delta)
             q = -np.longdouble(0.5) * (B + np.copysign(np.sqrt(delta), B))
             if abs(q) > np.longdouble(1e-30):
@@ -468,9 +472,13 @@ class Kinematics:
                         )
         if roots and not candidates:
             self.last_status = "NUMERICAL_FAILURE"
+        if self._discriminant_roundoff:
+            for candidate in candidates:
+                candidate.events += ("DISCRIMINANT_ROUNDOFF",)
         self.last_details = {
             "roots": len(roots),
             "accepted": len(candidates),
             "families": len(self.last_families),
+            "discriminant_roundoff": self._discriminant_roundoff,
         }
         return candidates
