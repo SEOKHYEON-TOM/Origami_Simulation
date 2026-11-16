@@ -93,11 +93,9 @@ class ContactReference(unittest.TestCase):
 
     def test_non_grashof_plot_uses_current_principal_component(self):
         sim = self.sim((40, 80, 50, 110), drive=1)
-        branch = next(
-            b.id
-            for b in sim.branches.values()
-            if b.family is None and b.seed_state[0] > 0
-        )
+        # This path has a nonpenetrating shape after pi+0.2. The other
+        # positive-drive path penetrates there despite satisfying angle bounds.
+        branch = "NE_mode2_c1"
         session = sim.create_session(branch, contact=False)
         session.move_to(np.pi + 0.2)
         old = session.state

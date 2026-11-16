@@ -540,7 +540,9 @@ class OrigamiViewer:
         lo, hi = self._limits()
         self.slider.valmin, self.slider.valmax = lo, hi
         self.slider.ax.set_xlim(lo, hi)
-        self.slider.set_active(not getattr(self.session, "is_family", False))
+        self.slider.set_active(
+            not self.session.is_family and not self.session.drive_locked
+        )
         eventson = self.slider.eventson
         self.slider.eventson = False
         try:
@@ -699,6 +701,7 @@ class OrigamiViewer:
                         piece[:, col],
                         c=self._colors[j],
                         lw=1.8,
+                        marker="o" if len(piece) == 1 else None,
                         label=label,
                     )
                     self._graph_lines.append(line)
@@ -768,6 +771,10 @@ class OrigamiViewer:
             message = (
                 message + " | " if message else ""
             ) + "Driving fold is fixed; use the free-fold slider."
+        elif self.session.drive_locked:
+            message = (
+                message + " | " if message else ""
+            ) + "CONTACT_LIMIT: isolated contact state; driving fold is fixed."
         elif not self.session.contact:
             message = (
                 message + " | " if message else ""

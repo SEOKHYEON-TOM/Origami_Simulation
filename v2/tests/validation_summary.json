@@ -1,8 +1,8 @@
 {
   "python": "3.12.14",
   "tests": {
-    "passed": 69,
-    "seconds": 39.502,
+    "passed": 81,
+    "seconds": 47.51,
     "command": "python -m unittest discover -s v2/tests -v"
   },
   "headless_gui": true,
@@ -351,5 +351,303 @@
     "real_desktop_mouse_tested": false,
     "headless_widgets_tested": true,
     "sampling_policy": "Drive-length weighted valid interior intervals, 1% endpoint margin; closure-validated continuation from nearest stored state."
+  },
+  "panel_contact_validation": {
+    "alphas": [
+      70,
+      110,
+      70,
+      110
+    ],
+    "drive": 1,
+    "resolution": 1000,
+    "contact_drive": 0.0,
+    "contact_rhos_deg": [
+      0.0,
+      180.0,
+      8.150171371250262e-15,
+      -179.99999999999997
+    ],
+    "contact_residual": 1.0661861475270323e-15,
+    "slider_active": false,
+    "drive_locked": true,
+    "visible_contact_drive_values": [
+      0.0
+    ],
+    "all_contact_components": [
+      [
+        0.0
+      ],
+      [
+        3.141592653589793
+      ]
+    ],
+    "status": "CONTACT_LIMIT: isolated contact state; driving fold is fixed. | Click a crease or its e1-e4 label to change the driving fold.",
+    "exact_math_arrays_1000": true,
+    "before_1000_seconds": 0.8497434999990219,
+    "after_1000_seconds": 1.287464009001269,
+    "real_desktop_mouse_tested": false,
+    "headless_widgets_tested": true,
+    "blocked_move": "CONTACT_LIMIT: isolated contact state; driving fold is fixed",
+    "penetrating_rhos_deg": [
+      56.70600000000001,
+      159.0855238157083,
+      -56.70599999999999,
+      -159.08552381570837
+    ],
+    "old_angle_bounds_accept": true,
+    "penetrating_pairs": [
+      [
+        1,
+        3
+      ]
+    ],
+    "penetrating_points": [
+      [
+        0.029799249122471838,
+        0.3292381102363111,
+        -5.3497629536267515e-17
+      ]
+    ],
+    "contact_enable_rejected": true,
+    "contact_enable_error": "CONTACT_LIMIT: current shape has panel penetration",
+    "no_contact_math_preserved_models": 18,
+    "math_comparison": [
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          160
+        ],
+        "drive": 1,
+        "math_states": 162,
+        "before_seconds": 0.2073963439979707,
+        "after_seconds": 0.20503991000077804,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          160
+        ],
+        "drive": 4,
+        "math_states": 162,
+        "before_seconds": 0.1252170770021621,
+        "after_seconds": 0.15866973400261486,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          60,
+          90,
+          135,
+          75
+        ],
+        "drive": 1,
+        "math_states": 117,
+        "before_seconds": 0.3685854850009491,
+        "after_seconds": 0.405815968002571,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          60,
+          90,
+          135,
+          75
+        ],
+        "drive": 4,
+        "math_states": 161,
+        "before_seconds": 0.48081022199767176,
+        "after_seconds": 0.5312397090019658,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          70,
+          70,
+          120,
+          110
+        ],
+        "drive": 1,
+        "math_states": 124,
+        "before_seconds": 0.3719338980008615,
+        "after_seconds": 0.42304578599942033,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          70,
+          70,
+          120,
+          110
+        ],
+        "drive": 4,
+        "math_states": 162,
+        "before_seconds": 0.42499461399711436,
+        "after_seconds": 0.46646292099831044,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          60,
+          60,
+          120,
+          120
+        ],
+        "drive": 1,
+        "math_states": 241,
+        "before_seconds": 0.1344579260003229,
+        "after_seconds": 0.18916245699801948,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          60,
+          60,
+          120,
+          120
+        ],
+        "drive": 4,
+        "math_states": 324,
+        "before_seconds": 0.206928831001278,
+        "after_seconds": 0.2043646650017763,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          70,
+          110,
+          70,
+          110
+        ],
+        "drive": 1,
+        "math_states": 241,
+        "before_seconds": 0.17230150399700506,
+        "after_seconds": 0.21455709200017736,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          70,
+          110,
+          70,
+          110
+        ],
+        "drive": 4,
+        "math_states": 241,
+        "before_seconds": 0.17184180399999605,
+        "after_seconds": 0.21654029300043476,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          90,
+          90,
+          90,
+          90
+        ],
+        "drive": 1,
+        "math_states": 403,
+        "before_seconds": 0.15995081100118114,
+        "after_seconds": 0.2277947629991104,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          90,
+          90,
+          90,
+          90
+        ],
+        "drive": 4,
+        "math_states": 403,
+        "before_seconds": 0.15935573000024306,
+        "after_seconds": 0.2295377449991065,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          60,
+          90,
+          120,
+          150
+        ],
+        "drive": 1,
+        "math_states": 161,
+        "before_seconds": 0.3991738529985014,
+        "after_seconds": 0.46199690399953397,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          60,
+          90,
+          120,
+          150
+        ],
+        "drive": 4,
+        "math_states": 162,
+        "before_seconds": 0.4003454800003965,
+        "after_seconds": 0.4431153069999709,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          40,
+          80,
+          50,
+          110
+        ],
+        "drive": 1,
+        "math_states": 116,
+        "before_seconds": 0.35833077400093316,
+        "after_seconds": 0.3322835919971112,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          40,
+          80,
+          50,
+          110
+        ],
+        "drive": 4,
+        "math_states": 104,
+        "before_seconds": 0.29657504799979506,
+        "after_seconds": 0.29475619200093206,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          70,
+          80,
+          70,
+          100
+        ],
+        "drive": 1,
+        "math_states": 136,
+        "before_seconds": 0.378866545001074,
+        "after_seconds": 0.4020814920004341,
+        "exact_math_arrays": true
+      },
+      {
+        "alphas": [
+          70,
+          80,
+          70,
+          100
+        ],
+        "drive": 4,
+        "math_states": 136,
+        "before_seconds": 0.36590685099872644,
+        "after_seconds": 0.3991336110011616,
+        "exact_math_arrays": true
+      }
+    ],
+    "scope": "Transverse interior intersections of four zero-thickness radial triangular panels; coplanar overlap allowed. Discrete continuation checks, not certified continuous collision detection."
   }
 }

@@ -117,7 +117,7 @@ class BranchChoices(unittest.TestCase):
             )
         self.assertEqual(len(v.random_initializations), 0)
 
-    def test_wrap_keeps_selected_path_and_toggle_keeps_shape(self):
+    def test_wrap_keeps_path_and_rejects_penetrating_contact(self):
         v = self.viewer(branch="NE_mode1", random_seed=42)
         # Start on the positive interval, then cross its allowed pi seam.
         self.assertGreater(v.slider.val, 0)
@@ -129,12 +129,15 @@ class BranchChoices(unittest.TestCase):
         before = v.sim.get_3d_geometry(v.session.state.rhos)[1]
         starts = len(v.random_initializations)
         v.check.set_active(0)
-        self.assertTrue(v.session.contact, v.last_error)
-        self.assertEqual(len(v.branch_options), 4)
+        # Periodic continuity does not imply physical nonpenetration. This
+        # wrapped shape was accepted by the old angle-only contact policy.
+        self.assertFalse(v.session.contact)
+        self.assertIn("penetration", v.last_error)
+        self.assertFalse(v.check.get_status()[0])
+        self.assertEqual(len(v.branch_options), 2)
         np.testing.assert_allclose(
             v.sim.get_3d_geometry(v.session.state.rhos)[1], before, atol=1e-12
         )
-        v.check.set_active(0)
         self.assertEqual(len(v.branch_options), 2)
         self.assertEqual(v.radio.value_selected, "NE_mode1")
         self.assertEqual(len(v.random_initializations), starts)

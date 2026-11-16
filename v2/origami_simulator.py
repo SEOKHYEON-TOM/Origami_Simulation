@@ -1,7 +1,8 @@
 """Degree-four origami candidates, connected actuation branches and sessions.
 
 All public crease indices are original one-based indices; angles are radians
-unless named *_deg. Contact implements continuous angle bounds, not collision.
+unless named *_deg. Contact checks angle bounds and transverse panel penetration
+for the four zero-thickness, vertex-sharing triangular panels.
 """
 
 from dataclasses import dataclass, field
@@ -18,6 +19,37 @@ def wrap_angle(a):
 
 def lift_angles(q, ref):
     return np.asarray(ref) + wrap_angle(np.asarray(q) - ref)
+
+
+def panel_penetrations(vertices, tolerance=1e-10):
+    """Proper intersections of opposite radial panels; touching is allowed.
+
+    Each triangle is (O,u,v), with sectors strictly between 0 and pi. The
+    cofactors of [u,v,-w,-z] give its null vector. Four strictly same-sign
+    coefficients give a point in both triangle interiors after normalization.
+    Rank-two/coplanar overlap is boundary contact, not transverse penetration.
+    Returned panel numbers match get_3d_geometry's one-based face order.
+    """
+    vertices = np.asarray(vertices, float)
+    if vertices.shape != (5, 3) or not np.isfinite(vertices).all():
+        raise ValueError("five finite 3D vertices required")
+    rays = vertices[1:] - vertices[0]
+    panels = rays[[[3, 0], [0, 1], [1, 2], [2, 3]]]
+    hits = []
+    for i, j in ((0, 2), (1, 3)):
+        u, v = panels[i]
+        w, z = panels[j]
+        uv, wz = np.cross(u, v), np.cross(w, z)
+        k = np.array([v @ wz, -u @ wz, -z @ uv, w @ uv])
+        scale = np.linalg.norm(k)
+        if scale <= tolerance:
+            continue
+        k /= scale
+        if np.all(k > tolerance) or np.all(k < -tolerance):
+            weights = abs(k) / np.sum(abs(k))
+            point = vertices[0] + weights[0] * u + weights[1] * v
+            hits.append({"panels": (i + 1, j + 1), "point": point})
+    return hits
 
 
 @dataclass
@@ -246,6 +278,8 @@ class OrigamiDegree4Simulator:
 
     def _advance(self, q, t, target, tangent=None, contact=False):
         self._check_drive_path(t, target)
+        if contact:
+            self._require_contact(q)
         if abs(target - t) < 1e-13:
             return q.copy(), tangent, None
         c = None
@@ -254,8 +288,8 @@ class OrigamiDegree4Simulator:
         )[1:]:
             q, tangent, c = self._step(q, t, float(goal), tangent)
             t = float(goal)
-            if contact and np.any(abs(q) > np.pi + 1e-8):
-                raise PathError("CONTACT_LIMIT", "continuous fold bound")
+            if contact:
+                self._require_contact(q)
         return q, tangent, c
 
     def _name(self, c, rank, component):
@@ -366,45 +400,10 @@ class OrigamiDegree4Simulator:
                         )
                 rows = np.array(sorted(rows, key=lambda q: q[self.drive_index]))
                 all_rows.extend(rows)
-                physical = self._contact_pieces(rows)
-                mask = np.all(abs(rows) <= np.pi + 1e-8, axis=1)
-                for ix in np.flatnonzero(np.diff(mask.astype(int))):
-                    inside, outside = (
-                        (rows[ix], rows[ix + 1])
-                        if mask[ix]
-                        else (rows[ix + 1], rows[ix])
-                    )
-                    ti, to = float(inside[self.drive_index]), float(
-                        outside[self.drive_index]
-                    )
-                    incoming = (outside - inside) / (to - ti)
-                    resolved = True
-                    for _ in range(22):
-                        mid = (ti + to) / 2
-                        try:
-                            qm, _, _ = self._advance(
-                                inside, float(inside[self.drive_index]), mid, incoming
-                            )
-                        except PathError as exc:
-                            ends.append(
-                                Endpoint(
-                                    ti, exc.reason, "contact boundary: " + str(exc)
-                                )
-                            )
-                            resolved = False
-                            break
-                        if np.max(abs(qm)) <= np.pi:
-                            ti = mid
-                        else:
-                            to = mid
-                    if resolved:
-                        ends.append(
-                            Endpoint(
-                                ti,
-                                "CONTACT_LIMIT",
-                                "continuous-angle boundary, bracket <1e-7 rad",
-                            )
-                        )
+                physical, contact_ends = self._contact_path(
+                    rows, (reached[-1], reached[1])
+                )
+                ends.extend(contact_ends)
                 self.branches[bid] = Branch(
                     bid,
                     c.mode_id or bid,
@@ -554,11 +553,144 @@ class OrigamiDegree4Simulator:
     def _contact_pieces(self, rows):
         if not len(rows):
             return []
-        good = np.all(abs(rows) <= np.pi + 1e-8, axis=1)
+        good = np.array([self._contact_reason(q) is None for q in rows])
         runs = np.split(
             np.arange(len(rows)), np.flatnonzero(np.diff(good.astype(int))) + 1
         )
         return [rows[ix] for ix in runs if len(ix) and good[ix[0]]]
+
+    def _contact_reason(self, q):
+        if np.any(abs(q) > np.pi + 1e-8):
+            return "continuous fold bound"
+        hits = panel_penetrations(self._fold_vertices(q))
+        if hits:
+            return "panel penetration: " + ", ".join(
+                f"P{hit['panels'][0]}/P{hit['panels'][1]}" for hit in hits
+            )
+        return None
+
+    def _require_contact(self, q):
+        reason = self._contact_reason(q)
+        if reason is not None:
+            raise PathError("CONTACT_LIMIT", reason)
+
+    def contact_report(self, rhos_rad):
+        """Inspect bounded angles and opposite-panel penetration independently."""
+        _, vertices = self.get_3d_geometry(rhos_rad)
+        hits = panel_penetrations(vertices)
+        bounded = bool(np.all(abs(np.asarray(rhos_rad)) <= np.pi + 1e-8))
+        return {
+            "angle_bounds": bounded,
+            "penetrations": hits,
+            "admissible": bounded and not hits,
+        }
+
+    def _contact_path(self, rows, reached):
+        """Filter contact intervals and retain exact isolated boundary states.
+
+        This augments only contact data. Mathematical samples, seeds and IDs
+        remain untouched. Boundary refinement is local, not a CCD certificate.
+        """
+        points = list(rows)
+        ends = []
+        for target in (reached[0], 0.0, reached[1]):
+            if abs(abs(target) - np.pi) < 1e-12:
+                target = float(np.copysign(np.pi, target))
+            if not reached[0] - 1e-12 <= target <= reached[1] + 1e-12:
+                continue
+            ids = np.argsort(abs(rows[:, self.drive_index] - target))[:2]
+            if len(ids) < 2:
+                continue
+            a, z = rows[ids]
+            dt = z[self.drive_index] - a[self.drive_index]
+            if abs(dt) < 1e-12:
+                continue
+            try:
+                if self._core._is_continuum(target):
+                    # At a continuum seam A=C=0, A,C=O(delta^2),
+                    # B=K*delta+O(delta^3), K!=0 for 0<alpha_i<pi.
+                    # Dividing A*p^2+B*p*q+C*q^2=0 by delta gives
+                    # p*q=0. Isolated incoming modes therefore limit to
+                    # the family's free angle 0 or pi, not the arbitrary
+                    # first-order extrapolation along the entire continuum.
+                    family = self._core._family(target)
+                    prediction = a + (z - a) / dt * (target - a[self.drive_index])
+                    limits = [family["evaluate"](free) for free in (0.0, np.pi)]
+                    candidates = [
+                        lift_angles(c.rhos, prediction) for c in limits if c is not None
+                    ]
+                    candidates.sort(key=lambda q: np.linalg.norm(q - prediction))
+                    if not candidates or (
+                        len(candidates) > 1
+                        and abs(
+                            np.linalg.norm(candidates[0] - prediction)
+                            - np.linalg.norm(candidates[1] - prediction)
+                        )
+                        < 1e-7
+                    ):
+                        raise PathError("AMBIGUOUS", "continuum boundary limit")
+                    q = candidates[0]
+                    q[self.drive_index] = float(target)
+                else:
+                    if np.min(abs(rows[:, self.drive_index] - target)) < 1e-12:
+                        continue
+                    q, _, _ = self._advance(
+                        a, float(a[self.drive_index]), float(target), (z - a) / dt
+                    )
+                points = [
+                    p for p in points if abs(p[self.drive_index] - target) > 1e-12
+                ]
+                points.append(q)
+            except PathError as error:
+                ends.append(
+                    Endpoint(
+                        float(target),
+                        error.reason,
+                        "contact boundary evaluation: " + str(error),
+                    )
+                )
+                continue
+        points.sort(key=lambda q: q[self.drive_index])
+        good = [self._contact_reason(q) is None for q in points]
+        refined = []
+        for ix in np.flatnonzero(np.diff(np.array(good, int))):
+            inside, outside = (
+                (points[ix], points[ix + 1])
+                if good[ix]
+                else (points[ix + 1], points[ix])
+            )
+            initial = inside
+            ti, to = float(inside[self.drive_index]), float(outside[self.drive_index])
+            tangent = (outside - inside) / (to - ti)
+            reason = self._contact_reason(outside)
+            resolved = True
+            for _ in range(25):
+                if abs(to - ti) < 1e-8:
+                    break
+                mid = (ti + to) / 2
+                try:
+                    qm, _, _ = self._advance(inside, ti, mid, tangent)
+                except PathError as error:
+                    ends.append(Endpoint(ti, error.reason, str(error)))
+                    resolved = False
+                    break
+                if self._contact_reason(qm) is None:
+                    inside, ti = qm, mid
+                else:
+                    to = mid
+            else:
+                ends.append(Endpoint(ti, "NUMERICAL_FAILURE", "contact refinement"))
+                continue
+            if not resolved:
+                continue
+            if abs(ti - initial[self.drive_index]) < 1e-7:
+                ti = float(initial[self.drive_index])
+            else:
+                refined.append(inside)
+            ends.append(Endpoint(ti, "CONTACT_LIMIT", reason or "panel contact"))
+        points.extend(refined)
+        points.sort(key=lambda q: q[self.drive_index])
+        return self._contact_pieces(np.array(points)), ends
 
     def plot_data(self, branch_id, contact=None):
         b = self.branches[branch_id]
@@ -636,18 +768,22 @@ class OrigamiDegree4Simulator:
             raise ValueError("four finite folds required")
         if closure_error(self.original_alphas, q) > max(self._core.residual_tol, 1e-7):
             raise ValueError("folding angles do not satisfy rotation closure")
-        frame = rz(self.original_alphas[3])
-        vertices = [np.zeros(3), frame[:, 0].copy()]
-        for i in range(3):
-            frame = frame @ rx(q[i]) @ rz(self.original_alphas[i])
-            vertices.append(frame[:, 0].copy())
-        v = np.array(vertices)
+        v = self._fold_vertices(q)
         return [
             [v[0], v[4], v[1]],
             [v[0], v[1], v[2]],
             [v[0], v[2], v[3]],
             [v[0], v[3], v[4]],
         ], v
+
+    def _fold_vertices(self, q):
+        """Construct the same panel mesh after the caller validated closure."""
+        frame = rz(self.original_alphas[3])
+        vertices = [np.zeros(3), frame[:, 0].copy()]
+        for i in range(3):
+            frame = frame @ rx(q[i]) @ rz(self.original_alphas[i])
+            vertices.append(frame[:, 0].copy())
+        return np.array(vertices)
 
     def plot_2d_static(self, branch=None, contact=None, show=True):
         import matplotlib.pyplot as plt
@@ -663,6 +799,7 @@ class OrigamiDegree4Simulator:
                             p[:, self.drive_index],
                             p[:, j],
                             label=bid + " e%d" % (j + 1),
+                            marker="o" if len(p) == 1 else None,
                         )
         ax.set(
             xlim=(-np.pi, np.pi),
@@ -720,10 +857,43 @@ class SimulationSession:
         self.contact_reference_history = []
         self._contact_plot_cache = None
         self.contact_plot_endpoints = []
+        self._initial_contact_piece = None
         q = self.branch.seed_state.copy()
+        if self.contact:
+            choices = [
+                (float(np.linalg.norm(row - q)), row, piece)
+                for piece in self.branch.physical_segments
+                for row in piece
+            ]
+            if not choices:
+                raise PathError(
+                    "CONTACT_LIMIT", "this path has no admissible contact start"
+                )
+            _, q, self._initial_contact_piece = min(choices, key=lambda item: item[0])
+            q = q.copy()
+            if not self.is_family:
+                ids = np.argsort(
+                    abs(self.branch.states[:, sim.drive_index] - q[sim.drive_index])
+                )[:2]
+                if len(ids) == 2:
+                    a, z = self.branch.states[ids]
+                    dt = z[sim.drive_index] - a[sim.drive_index]
+                    if abs(dt) > 1e-12:
+                        self.tangent = (z - a) / dt
         if self.is_family:
             self.free_angle = float(q[self.branch.family["free_crease"] - 1])
         self.state = self._state(q, float(q[sim.drive_index]), ())
+
+    @property
+    def drive_locked(self):
+        """The current contact component contains only one resolved drive value."""
+        if not self.contact or self.is_family:
+            return False
+        pieces = self.plot_data()
+        if not pieces:
+            return True
+        drives = np.concatenate([p[:, self.sim.drive_index] for p in pieces])
+        return bool(np.ptp(drives) < 1e-7)
 
     def _state(self, q, t, events):
         wrapped = float(wrap_angle(t))
@@ -754,6 +924,14 @@ class SimulationSession:
             return self.state
         if self.contact and abs(target) > np.pi + 1e-10:
             raise PathError("DOMAIN_END", "contact drive domain")
+        if (
+            self.contact
+            and self.drive_locked
+            and abs(target - self.state.drive_unwrapped) > 1e-12
+        ):
+            raise PathError(
+                "CONTACT_LIMIT", "isolated contact state; driving fold is fixed"
+            )
         old = self.state
         q, tangent, _ = self.sim._advance(
             old.rhos, old.drive_unwrapped, target, self.tangent, self.contact
@@ -793,8 +971,8 @@ class SimulationSession:
                 raise PathError("NUMERICAL_FAILURE", "family state")
             q = lift_angles(c.rhos, q)
             q[index] = float(goal)
-            if self.contact and np.any(abs(q) > np.pi + 1e-8):
-                raise PathError("CONTACT_LIMIT")
+            if self.contact:
+                self.sim._require_contact(q)
         self.free_angle = target
         self.state = self._state(q, self.state.drive_unwrapped, ("FAMILY_MOVE",))
         return self.state
@@ -823,6 +1001,13 @@ class SimulationSession:
         if enabled == self.contact:
             self.last_error = None
             return True
+        if enabled:
+            # Reanchoring cannot remove intersections: it only changes angles
+            # by multiples of 2*pi, which preserve the panel geometry.
+            hits = panel_penetrations(self.sim._fold_vertices(self.state.rhos))
+            if hits:
+                self.last_error = "CONTACT_LIMIT: current shape has panel penetration"
+                return False
         if enabled and (
             abs(self.state.drive_unwrapped) > np.pi + 1e-10
             or np.any(abs(self.state.rhos) > np.pi + 1e-8)
@@ -867,7 +1052,7 @@ class SimulationSession:
                 for p in self.sim.plot_data(b.id, False)
             ]
         if self.contact_reference is None:
-            return self.sim.plot_data(self.branch_id, True)
+            return self.sim._split(self._initial_contact_piece)
         if self._contact_plot_cache is not None:
             return self._contact_plot_cache
         anchor = self.contact_reference
@@ -900,8 +1085,7 @@ class SimulationSession:
                             q = lift_angles(c.rhos, q)
                             q[free_index] = float(sub)
                             q[self.sim.drive_index] = anchor.drive_unwrapped
-                            if np.any(abs(q) > np.pi + 1e-8):
-                                raise PathError("CONTACT_LIMIT")
+                            self.sim._require_contact(q)
                     else:
                         q, tangent, _ = self.sim._advance(
                             q, t, float(goal), tangent, True
