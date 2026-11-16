@@ -11,6 +11,8 @@
 
 **[3D 주름 클릭으로 구동축 변경](#crease-picker-guide)**
 
+**[Contact에 따른 branch 선택지와 무작위 초기값](#branch-choices-guide)**
+
 - 검토 기준: 39628b5d9ab1aafdd20dec95305d44dc5edf2c51
 - 대상: [origami_simulator.py](./origami_simulator.py), 총 694개 내용 행과 마지막 개행
 - 재현 환경: Python 3.12.14, NumPy 2.3.5, Matplotlib 3.10.8, Agg backend
@@ -1400,7 +1402,7 @@ Contact 켜기/끄기와 주기적 wrap도 새로 선택한 축을 기준으로 
 
 ### 13.4 검증
 
-전체 자동 테스트 **57개 통과, 약 30.892초**. 이번 기능에 대한 9개 회귀 테스트를 추가했다.
+이 변경 시점의 전체 자동 테스트 **57개 통과, 약 30.892초**. 이번 기능에 대한 9개 회귀 테스트를 추가했다.
 
 Headless Matplotlib에서 실제 화면 좌표의 MouseEvent press/release를 발생시켜
 주름선과 라벨 클릭, 그래프의 축·데이터 갱신을 검사했다. 추가 검증은 다음과 같다.
@@ -1421,3 +1423,106 @@ Headless Matplotlib에서 실제 화면 좌표의 MouseEvent press/release를 �
 따라 달라지며 실시간 성능을 보장하는 수치는 아니다.
 실제 데스크톱 마우스 조작은 수행하지 않았고, 위젯·마우스 이벤트와 Agg 렌더링을
 실행하여 검증했다. 선택 전후 이미지는 작업용 work/picker에 저장했다.
+
+<a id="branch-choices-guide"></a>
+
+## 14. Contact별 branch 선택과 무작위 초기값
+
+### 14.1 Elliptic 예제의 4개/2개 선택지
+
+alpha=[70,80,70,100], driving crease=e4를 기준으로 다음처럼 표시한다.
+
+| 설정 | 선택지 | 의미 |
+| --- | --- | --- |
+| Contact bounds ON | NE_mode1_c0, NE_mode2_c0, NE_mode1_c1, NE_mode2_c1 | 시작 구간과 경로를 각각 선택 |
+| Contact bounds OFF | NE_mode1, NE_mode2 | ±pi에서 연결을 검증한 구간을 같은 선택지로 묶음 |
+
+이 예제의 구동각 정의역은 대략 [-180,-29.349698]도 및
+[29.349698,180]도이다. No-contact에서 NE_mode1은 NE_mode1_c0/c1을,
+NE_mode2는 NE_mode2_c0/c1을 포함한다. 그래프도 해당 경로의 두 구간을
+표시하되 대표 각도 경계와 실제 정의역 공백을 가로질러 선을 잇지 않는다.
+
+이름이나 이차근 순서만 보고 병합하지 않는다. 기존 model의 `_connect_seams()`가
+네 각도의 연속 추적으로 확인한 ±pi 연결 정보에 따라 부여한 mode_id로 묶는다.
+수치적으로 연결이 확인되지 않은 구간, 독립적인 fixed-drive family는 유지한다.
+따라서 모든 기하에 4개/2개를 강제하지 않는다. 예를 들어 [90,90,90,90]의
+null-fold 및 완전접힘 family는 별도 선택지로 남는다.
+
+여기서 두 선택지는 지정한 구동 주름의 주기적 경로 선택을 뜻한다.
+구동 극값에서 다른 근으로 돌아가는 연결이나 전체 configuration space의
+위상적 연결 성분이 정확히 둘이라는 수학적 주장은 아니다. 구동 불가능한
+중앙 공백이나 극값은 Contact OFF에서도 건너뛸 수 없다.
+
+### 14.2 초기값 정책
+
+- Contact ON으로 창을 열거나 다른 구간을 선택하면 기존의 정상 내부 seed에서 시작한다.
+- Contact OFF로 창을 열거나 다른 경로를 명시적으로 선택하면 그 경로의 유효
+  구간 내부에서 연속 각도를 무작위로 고른다. 구간 선택 확률은 구동각 길이에 비례하며,
+  각 구간 양 끝 1%는 초기값 후보에서 제외한다. 이는 초기값 선택 정책이며
+  solver의 지원 정의역이나 slider 도달 범위를 줄이는 조치는 아니다.
+- 저장한 최근접 상태와 국소 접선으로 선택 각도까지 계산하고 유한성·폐합 잔차를 확인한다.
+  실패하면 최대 24회 다시 시도한다. 끝까지 실패하면 오류를 표시하고 선택 전 상태를 유지한다.
+- 고정 구동각 family에서는 유효 자유각 구간의 내부를 무작위로 고른다.
+  주 구동각은 그대로 고정하고 Free fold slider를 사용한다.
+- 이미 선택한 경로를 다시 클릭하거나 slider를 움직일 때마다 초기값을 바꾸지 않는다.
+- Contact ON/OFF 전환과 3D 주름 클릭은 현재 형상과 경로를 유지한다.
+  이때 무작위 초기화하지 않는다. Wrap 후 ON 전환 시에는 12절의 현재 형상 기준
+  각도 재설정 정책을 적용한다. 물리적 패널 충돌 검사를 추가한 것은 아니다.
+
+Foschi solver, branch 추적용 10–50개 seed 정책, run_simulation의 계산 결과,
+명시적 `sim.create_session(branch_id)`의 결정적 초기화는 유지한다.
+무작위 정책은 viewer에만 적용한다. ±pi 연결을 지나도 내부 세션은 기존 raw
+branch ID를 유지하고, 화면에는 그 ID가 속한 주기적 경로 이름을 표시한다.
+Contact를 켠 직후에는 현재 형상 기준을 유지하며, 다른 구간을 선택하면 그 구간의
+기존 초기점으로 이동한다.
+
+### 14.3 실행과 API
+
+저장소 루트에서 다음을 실행한다. 매번 다른 유효 초기값으로 시작한다.
+
+    python .\v2\origami_simulator.py --alphas 70 80 70 100 --drive 4 --no-contact
+
+같은 초기값을 재현하려면 같은 입력·점 개수·선택 경로와 함께 시드를 지정한다.
+
+    python .\v2\origami_simulator.py --alphas 70 80 70 100 --drive 4 --no-contact --branch NE_mode2 --random-seed 42
+
+창에서 Contact bounds를 켜면 4개, 끄면 2개 목록으로 즉시 갱신한다.
+Contact ON 상태로 시작하려면 --no-contact를 생략한다.
+기존 raw 이름을 --branch NE_mode1_c1처럼 입력하는 것도 가능하다.
+No-contact에서는 해당 이름이 속한 경로 전체에서 무작위 초기화하므로,
+반드시 c1 구간에서 시작한다는 뜻은 아니다.
+
+    viewer = sim.show_3d_interactive(contact=False, random_seed=42, show=False)
+    print(viewer.branch_options)  # 표시 이름 -> raw branch ID tuple
+    viewer.set_branch("NE_mode2")
+    print(viewer.session.branch_id, viewer.session.state.drive_unwrapped)
+    print(viewer.random_initializations)
+
+`sim.branches`와 `sim.create_session()`은 기존 raw ID를 사용한다.
+묶인 표시 이름은 viewer 선택 API와 CLI --branch에서 해석한다.
+초기값 재현은 같은 환경·설정·조작 순서를 전제로 하며, 선택한 경로의 난수열이
+최종 시뮬레이션 점 개수와 무관한 같은 상태를 보장하는 것은 아니다.
+
+### 14.4 검증과 성능
+
+전체 자동 테스트 **69개 통과, 약 39.502초**. 이번 기능의 회귀 테스트 12개를 추가했다.
+
+검증 결과와 측정 수치는 v2/tests/validation_summary.json의
+branch_choices_validation에 기록한다. 이번 변경의 회귀 검증은 다음을 포함한다.
+
+- 실제 checkbox/radio 콜백으로 4↔2 목록 갱신과 현재 상태 보존
+- 무작위 초기값의 폐합 및 독립적인 3D 섹터각 검사, 동일 시드 재현
+- 양쪽 유효 정의역에서 초기화되고 저장 샘플에 고정되지 않는지 확인
+- 새 경로 선택 시 한 번만 초기화, 실패 시 기존 세션·선택지 유지
+- Wrap 전후 선택 경로 유지, Contact 전환 및 driving crease 변경 시 무작위 초기화 방지
+- Elliptic 41/81/181점 및 hyperbolic 예제에서 같은 선택지 대응
+- 실제 불가능 구동 구간의 이동 거부와 특수형 family 보존
+- Viewer 생성 전후 원래 계산 배열·seed 및 결정적 세션 불변
+
+1000점 예제의 Contact ON/OFF 및 무작위 시작 화면을 Agg로 렌더링하고
+작업용 work/branch-choices에 저장했다. 실제 데스크톱 마우스 조작은 수행하지 않았다.
+전체 공간을 다시 계산하지 않고 최근접 상태에서 초기값까지 국소 계산만 추가한다.
+기존 수학 계산 및 3D 주름 선택 기능에 대한 전체 회귀 테스트도 함께 실행했다.
+같은 환경의 1000점 예제에서 추가 무작위 초기화는 약 0.00106초, solver 호출
+1회였고, 선택한 초기 상태의 폐합 잔차는 약 6.16e-16이었다. Contact ON→OFF 시
+네 접힘각 변화는 0이었다. 성능 수치는 한 차례 측정으로 입력·환경에 따라 달라진다.

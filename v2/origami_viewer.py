@@ -54,19 +54,34 @@ class OrigamiViewer:
     reason.  No alternate branch is selected implicitly.
     """
 
-    def __init__(self, sim, branch=None, contact=None, wrap_margin=0.1):
+    def __init__(
+        self, sim, branch=None, contact=None, wrap_margin=0.1, random_seed=None
+    ):
         if not np.isfinite(wrap_margin) or not 0 < wrap_margin < np.pi:
             raise ValueError("wrap_margin must be finite and between 0 and pi.")
         if not getattr(sim, "branches", None):
             raise ValueError("No branches available; run run_simulation() first.")
         self.sim = sim
         self.wrap_margin = float(wrap_margin)
-        self.session = sim.create_session(branch=branch, contact=contact)
+        self._rng = np.random.default_rng(random_seed)
+        self.random_initializations = []
+        self.session = sim.create_session(
+            branch=branch if branch in sim.branches else None, contact=contact
+        )
+        self._build_branch_options()
+        if branch is not None:
+            choice = self._resolve_choice(branch)
+            self.session = sim.create_session(
+                self._branch_options[choice][0], contact=self.session.contact
+            )
+        if not self.session.contact:
+            self.session = self._random_session(
+                self._branch_options[self._selected_option()]
+            )
         self._guard = False
         self.last_error = None
         self.last_movement_success = True
         self.update_count = 0
-        self._branch_ids = list(sim.branches)
         self._graph_lines = []
         self._models = {sim.driving_crease: sim}
         self._resolution = getattr(sim, "resolution", 1000)
@@ -129,7 +144,7 @@ class OrigamiViewer:
         self.radio = RadioButtons(
             radio_ax,
             self._branch_ids,
-            active=self._branch_ids.index(self.session.branch_id),
+            active=self._branch_ids.index(self._selected_option()),
         )
         for label in self.radio.labels:
             label.set_fontsize(7)
@@ -154,6 +169,138 @@ class OrigamiViewer:
         self._sync_slider()
         self.redraw_background()
         self._render_state()
+
+    @property
+    def branch_options(self):
+        """Displayed choice -> underlying actuation segments (read-only copy)."""
+        return dict(self._branch_options)
+
+    def _build_branch_options(self):
+        # mode_id is assigned by the model's verified seam adjacency graph.
+        # Fixed-drive families remain separate; never force every geometry to 2.
+        groups = {}
+        for bid, branch in self.sim.branches.items():
+            key = (
+                branch.mode_id
+                if not self.session.contact and branch.family is None
+                else bid
+            )
+            groups.setdefault(key, []).append(bid)
+        self._branch_options = {}
+        for key, members in groups.items():
+            label = key
+            prefix, _, suffix = key.rpartition("_c")
+            if len(members) > 1 and suffix.isdigit():
+                label = prefix
+            if label in self._branch_options:
+                label = key
+            self._branch_options[label] = tuple(members)
+        self._branch_ids = list(self._branch_options)
+
+    def _selected_option(self):
+        return next(
+            label
+            for label, members in self._branch_options.items()
+            if self.session.branch_id in members
+        )
+
+    def _resolve_choice(self, choice):
+        if choice in self._branch_options:
+            return choice
+        for label, members in self._branch_options.items():
+            if choice in members:
+                return label
+        raise ValueError("Unknown branch " + str(choice))
+
+    def _random_session(self, members):
+        """Sample the interior of this path, then validate exact continuation.
+
+        Randomness belongs only to viewer initialization / explicit path choice.
+        The solver's seed states and deterministic create_session API are intact.
+        """
+        intervals = []
+        for bid in members:
+            branch = self.sim.branches[bid]
+            bounds = (
+                branch.family["valid_intervals"]
+                if branch.family is not None
+                else branch.reachable_intervals
+            )
+            for lo, hi in bounds:
+                margin = max(1e-9, 0.01 * (hi - lo))
+                if hi - lo > 2 * margin:
+                    intervals.append((bid, lo + margin, hi - margin))
+        if not intervals:
+            raise ValueError("No regular interior available for random initialization.")
+        weights = np.array([hi - lo for _, lo, hi in intervals])
+        weights /= weights.sum()
+        last_error = None
+        for _ in range(24):
+            bid, lo, hi = intervals[int(self._rng.choice(len(intervals), p=weights))]
+            target = float(self._rng.uniform(lo, hi))
+            new = self.sim.create_session(bid, contact=False)
+            try:
+                if new.is_family:
+                    candidate = new.branch.family["evaluate"](target)
+                    if candidate is None:
+                        raise ValueError("No family state at sampled free angle.")
+                    q = candidate.rhos.copy()
+                    q[self.sim.drive_index] = new.branch.family["fixed_drive"]
+                    drive = float(q[self.sim.drive_index])
+                    new.free_angle = target
+                else:
+                    rows = new.branch.states
+                    ids = np.argsort(abs(rows[:, self.sim.drive_index] - target))[:2]
+                    if len(ids) < 2:
+                        raise ValueError("Insufficient neighboring states.")
+                    a, z = rows[ids]
+                    dt = float(z[self.sim.drive_index] - a[self.sim.drive_index])
+                    if abs(dt) < 1e-12:
+                        raise ValueError("Degenerate drive coordinate.")
+                    q, new.tangent, _ = self.sim._advance(
+                        a, float(a[self.sim.drive_index]), target, (z - a) / dt
+                    )
+                    drive = target
+                new.state = new._state(q, drive, ("RANDOM_START",))
+                if (
+                    not np.isfinite(q).all()
+                    or new.state.residual > self.sim._core.residual_tol
+                ):
+                    raise ValueError("Sampled state failed closure validation.")
+            except ValueError as error:
+                last_error = error
+                continue
+            self.random_initializations.append(
+                {"branch_id": bid, "drive": drive, "free_angle": new.free_angle}
+            )
+            return new
+        raise ValueError(f"Cannot validate a random interior state: {last_error}")
+
+    def _sync_radio(self):
+        eventson = self.radio.eventson
+        self.radio.eventson = False
+        try:
+            self.radio.set_active(self._branch_ids.index(self._selected_option()))
+        finally:
+            self.radio.eventson = eventson
+
+    def _rebuild_branch_radio(self):
+        """Refresh options after contact/drive changes without moving the state."""
+        self.radio.disconnect(self._callback_ids[1])
+        self.radio.disconnect_events()
+        radio_ax = self.radio.ax
+        radio_ax.clear()
+        self._build_branch_options()
+        self.radio = RadioButtons(
+            radio_ax,
+            self._branch_ids,
+            active=self._branch_ids.index(self._selected_option()),
+        )
+        for label in self.radio.labels:
+            label.set_fontsize(7)
+        callbacks = list(self._callback_ids)
+        callbacks[1] = self.radio.on_clicked(self.set_branch)
+        self._callback_ids = tuple(callbacks)
 
     def _limits(self):
         extra = 0.0 if self.session.contact else self.wrap_margin
@@ -376,21 +523,7 @@ class OrigamiViewer:
             self._colors = [self._crease_colors[j] for j in self._other]
             self.ax_2d.set_xlabel(f"Driving angle e{crease} [rad]")
             self.slider.label.set_text(f"Fold e{crease}")
-            self.radio.disconnect(self._callback_ids[1])
-            self.radio.disconnect_events()
-            radio_ax = self.radio.ax
-            radio_ax.clear()
-            self._branch_ids = list(model.branches)
-            self.radio = RadioButtons(
-                radio_ax,
-                self._branch_ids,
-                active=self._branch_ids.index(new_session.branch_id),
-            )
-            for label in self.radio.labels:
-                label.set_fontsize(7)
-            callbacks = list(self._callback_ids)
-            callbacks[1] = self.radio.on_clicked(self.set_branch)
-            self._callback_ids = tuple(callbacks)
+            self._rebuild_branch_radio()
             self.last_error = None
             self.last_movement_success = True
             self._sync_slider()
@@ -471,33 +604,28 @@ class OrigamiViewer:
 
     def set_branch(self, branch_id):
         """Explicit user branch choice; failed selection retains old session."""
-        if self._guard or branch_id == self.session.branch_id:
+        if self._guard:
             return self.session.state
         self._guard = True
         try:
-            new_session = self.sim.create_session(
-                branch=branch_id, contact=self.session.contact
+            choice = self._resolve_choice(branch_id)
+            if choice == self._selected_option():
+                return self.session.state
+            members = self._branch_options[choice]
+            new_session = (
+                self.sim.create_session(branch=members[0], contact=True)
+                if self.session.contact
+                else self._random_session(members)
             )
             self.session = new_session
             self.last_error = None
             self.last_movement_success = True
-            eventson = self.radio.eventson
-            self.radio.eventson = False
-            try:
-                self.radio.set_active(self._branch_ids.index(self.session.branch_id))
-            finally:
-                self.radio.eventson = eventson
+            self._sync_radio()
             self._sync_slider()
             self.redraw_background()
             self._render_state()
         except ValueError as error:
-            previous = self._branch_ids.index(self.session.branch_id)
-            eventson = self.radio.eventson
-            self.radio.eventson = False
-            try:
-                self.radio.set_active(previous)
-            finally:
-                self.radio.eventson = eventson
+            self._sync_radio()
             self._error(error)
         finally:
             self._guard = False
@@ -537,6 +665,7 @@ class OrigamiViewer:
             else:
                 self.last_error = None
                 self.last_movement_success = True
+                self._rebuild_branch_radio()
                 self.redraw_background()
                 self._render_state()
             self._sync_contact()
@@ -580,7 +709,7 @@ class OrigamiViewer:
         elif self.ax_2d.legend_ is not None:
             self.ax_2d.legend_.remove()
         policy = "Contact bounds" if self.session.contact else "Periodic angles"
-        self.ax_2d.set_title(f"{self.session.branch_id} | {policy}", fontsize=10)
+        self.ax_2d.set_title(f"{self._selected_option()} | {policy}", fontsize=10)
 
     def _render_state(self):
         self._sync_family()
@@ -617,7 +746,7 @@ class OrigamiViewer:
             marker.set_offsets([[x, y[col]]])
             marker.set_color(self._crease_colors[col])
         self.ax_3d.set_title(
-            f"{self.session.branch_id}\n"
+            f"{self._selected_option()}\n"
             f"e{self.sim.driving_crease} = {np.rad2deg(x):.3f} deg | "
             f"continuous = {np.rad2deg(state.drive_unwrapped):.3f} deg | "
             f"turns = {state.winding_count}",
@@ -628,6 +757,7 @@ class OrigamiViewer:
             message = events
         else:
             messages = {
+                "RANDOM_START": "Random valid interior start selected.",
                 "CONTACT_REFERENCE_RESET": "Contact enabled at current shape; angle reference reset.",
                 "DRIVING_CREASE_CHANGED": f"Driving crease changed to e{self.sim.driving_crease}; shape preserved.",
             }
@@ -659,9 +789,17 @@ class OrigamiViewer:
         plt.close(self.fig)
 
 
-def create_viewer(sim, branch=None, contact=None, wrap_margin=0.1, show=True):
+def create_viewer(
+    sim, branch=None, contact=None, wrap_margin=0.1, show=True, random_seed=None
+):
     """Create the viewer; ``show=False`` supports headless callback testing."""
-    viewer = OrigamiViewer(sim, branch=branch, contact=contact, wrap_margin=wrap_margin)
+    viewer = OrigamiViewer(
+        sim,
+        branch=branch,
+        contact=contact,
+        wrap_margin=wrap_margin,
+        random_seed=random_seed,
+    )
     if show:
         plt.show()
     return viewer

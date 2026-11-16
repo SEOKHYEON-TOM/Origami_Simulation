@@ -1,8 +1,8 @@
 {
   "python": "3.12.14",
   "tests": {
-    "passed": 57,
-    "seconds": 30.892,
+    "passed": 69,
+    "seconds": 39.502,
     "command": "python -m unittest discover -s v2/tests -v"
   },
   "headless_gui": true,
@@ -307,5 +307,49 @@
     "real_desktop_mouse_tested": false,
     "headless_mouse_events_tested": true,
     "cached_selection_seconds": 0.1955505890000495
+  },
+  "branch_choices_validation": {
+    "alphas": [
+      70,
+      80,
+      70,
+      100
+    ],
+    "drive": 4,
+    "resolution": 1000,
+    "contact_options": {
+      "NE_mode1_c0": [
+        "NE_mode1_c0"
+      ],
+      "NE_mode2_c0": [
+        "NE_mode2_c0"
+      ],
+      "NE_mode1_c1": [
+        "NE_mode1_c1"
+      ],
+      "NE_mode2_c1": [
+        "NE_mode2_c1"
+      ]
+    },
+    "no_contact_options": {
+      "NE_mode1": [
+        "NE_mode1_c0",
+        "NE_mode1_c1"
+      ],
+      "NE_mode2": [
+        "NE_mode2_c0",
+        "NE_mode2_c1"
+      ]
+    },
+    "max_angle_change_on_toggle": 0.0,
+    "random_seed": 42,
+    "random_drive": 1.669425358566501,
+    "random_segment": "NE_mode1_c1",
+    "random_residual": 6.158451354482591e-16,
+    "random_initialization_seconds": 0.0010566230012045708,
+    "random_initialization_solve_calls": 1,
+    "real_desktop_mouse_tested": false,
+    "headless_widgets_tested": true,
+    "sampling_policy": "Drive-length weighted valid interior intervals, 1% endpoint margin; closure-validated continuation from nearest stored state."
   }
 }

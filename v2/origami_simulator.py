@@ -690,7 +690,7 @@ class OrigamiDegree4Simulator:
         return fig
 
     def show_3d_interactive(
-        self, branch=None, contact=None, show=True, wrap_margin=None
+        self, branch=None, contact=None, show=True, wrap_margin=None, random_seed=None
     ):
         from origami_viewer import create_viewer
 
@@ -702,6 +702,7 @@ class OrigamiDegree4Simulator:
             contact,
             self.wrap_margin if wrap_margin is None else wrap_margin,
             show=show,
+            random_seed=random_seed,
         )
         return self._viewer
 
@@ -930,9 +931,14 @@ if __name__ == "__main__":
     p.add_argument("--branch")
     p.add_argument("--no-contact", action="store_true")
     p.add_argument("--no-show", action="store_true")
+    p.add_argument(
+        "--random-seed", type=int, help="Reproduce the no-contact viewer start."
+    )
     args = p.parse_args()
     sim = OrigamiDegree4Simulator(
         args.alphas, contact=not args.no_contact, driving_crease=args.drive
     )
     sim.run_simulation(args.resolution)
-    sim.show_3d_interactive(branch=args.branch, show=not args.no_show)
+    sim.show_3d_interactive(
+        branch=args.branch, show=not args.no_show, random_seed=args.random_seed
+    )
