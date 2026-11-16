@@ -1,8 +1,8 @@
 {
   "python": "3.12.14",
   "tests": {
-    "passed": 48,
-    "seconds": 14.337,
+    "passed": 57,
+    "seconds": 30.892,
     "command": "python -m unittest discover -s v2/tests -v"
   },
   "headless_gui": true,
@@ -289,5 +289,23 @@
         "headless_viewer": true
       }
     ]
+  },
+  "driving_crease_picker_validation": {
+    "driver_before": 4,
+    "driver_after": 1,
+    "branch_before": "ff_plus_c0",
+    "branch_after": "ff_minus_c0",
+    "original_model_driver": 4,
+    "max_crease_angle_change": 0.0,
+    "max_vertex_change": 0.0,
+    "first_selection_seconds": 0.7257441030005793,
+    "resolution": 1000,
+    "graph_xlabel": "Driving angle e1 [rad]",
+    "slider_label": "Fold e1",
+    "closure_residual": 6.204835793620219e-16,
+    "last_error": null,
+    "real_desktop_mouse_tested": false,
+    "headless_mouse_events_tested": true,
+    "cached_selection_seconds": 0.1955505890000495
   }
 }

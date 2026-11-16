@@ -1,8 +1,9 @@
 """Matplotlib presentation for an OrigamiDegree4Simulator session.
 
-The model owns continuation, branch identity and contact decisions.  This module
-only forwards user actions and renders accepted states.  Keep the returned
-viewer alive while the window is open; it owns the widgets and their callbacks.
+The model owns solving, continuation and contact decisions. The viewer caches
+immutable models for explicit drive selections and matches their current paths.
+Keep the returned viewer alive while the window is open; it owns the widgets
+and their callbacks.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, RadioButtons, CheckButtons
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from mpl_toolkits.mplot3d import proj3d
 
 
 def _representative(values):
@@ -66,6 +68,11 @@ class OrigamiViewer:
         self.update_count = 0
         self._branch_ids = list(sim.branches)
         self._graph_lines = []
+        self._models = {sim.driving_crease: sim}
+        self._resolution = getattr(sim, "resolution", 1000)
+        self._press_xy = None
+        self.driver_history = []
+        self._crease_colors = ["royalblue", "seagreen", "firebrick", "mediumpurple"]
 
         self.fig = plt.figure(figsize=(15, 8))
         self.ax_3d = self.fig.add_axes([0.03, 0.28, 0.44, 0.65], projection="3d")
@@ -82,11 +89,12 @@ class OrigamiViewer:
         self.ax_2d.axvline(0, color="black", lw=0.6)
         self.ax_2d.grid(alpha=0.3)
         self._other = [i for i in range(4) if i != sim.driving_crease - 1]
-        self._colors = ["royalblue", "seagreen", "firebrick"]
+        self._colors = [self._crease_colors[j] for j in self._other]
         self.poly = Poly3DCollection([], edgecolors="#333", linewidths=1, alpha=0.82)
         self.poly.set_facecolor(["lightgray", "lightblue", "lightgreen", "lightcoral"])
         self.ax_3d.add_collection3d(self.poly)
         self.vertices = self.ax_3d.scatter([], [], [], c="black", s=25)
+        self.crease_lines = [self.ax_3d.plot([], [], [], zorder=8)[0] for _ in range(4)]
         self.crease_labels = [
             self.ax_3d.text(0, 0, 0, f"e{i}", fontsize=9) for i in range(1, 5)
         ]
@@ -135,6 +143,12 @@ class OrigamiViewer:
             self.check.on_clicked(self._on_contact),
             self.free_slider.on_changed(self.move_family),
         )
+        self._mouse_callback_ids = (
+            self.fig.canvas.mpl_connect("button_press_event", self._on_crease_press),
+            self.fig.canvas.mpl_connect(
+                "button_release_event", self._on_crease_release
+            ),
+        )
         # Keep a discoverable strong reference even when callers keep only fig.
         self.fig.origami_viewer = self
         self._sync_slider()
@@ -144,6 +158,250 @@ class OrigamiViewer:
     def _limits(self):
         extra = 0.0 if self.session.contact else self.wrap_margin
         return -np.pi - extra, np.pi + extra
+
+    def _on_crease_press(self, event):
+        toolbar = getattr(self.fig.canvas, "toolbar", None)
+        self._press_xy = (
+            (event.x, event.y)
+            if event.button == 1
+            and event.inaxes is self.ax_3d
+            and not self._guard
+            and not str(getattr(toolbar, "mode", ""))
+            else None
+        )
+
+    def _on_crease_release(self, event):
+        start, self._press_xy = self._press_xy, None
+        if (
+            start is None
+            or event.button != 1
+            or event.inaxes is not self.ax_3d
+            or np.linalg.norm(np.array([event.x, event.y]) - start) > 5
+        ):
+            return  # A drag rotates the camera; it must not change the driver.
+        chosen = self._crease_at(event.x, event.y)
+        if chosen is not None:
+            self.set_driving_crease(chosen)
+
+    def _crease_at(self, x, y):
+        """Pick projected rays or labels, not triangle edges or depth guesses."""
+        renderer = self.fig.canvas.get_renderer()
+        labels = []
+        for i, label in enumerate(self.crease_labels, start=1):
+            # Text3D.get_window_extent uses its unprojected coordinates outside
+            # draw(); project the label anchor explicitly for correct picking.
+            position = label.get_position_3d()
+            xp, yp, _ = proj3d.proj_transform(*position, self.ax_3d.get_proj())
+            px, py = self.ax_3d.transData.transform((xp, yp))
+            width, height, descent = renderer.get_text_width_height_descent(
+                label.get_text(), label.get_fontproperties(), ismath=False
+            )
+            if (
+                px - 3 <= x <= px + width + 3
+                and py - descent - 3 <= y <= py + height - descent + 3
+            ):
+                labels.append(
+                    (
+                        np.linalg.norm(
+                            np.array([x, y])
+                            - [px + width / 2, py + height / 2 - descent]
+                        ),
+                        i,
+                    )
+                )
+        if labels:
+            return min(labels)[1]
+        vertices = self.sim.get_3d_geometry(self.session.state.rhos)[1]
+        xyz = proj3d.proj_transform(
+            vertices[:, 0], vertices[:, 1], vertices[:, 2], self.ax_3d.get_proj()
+        )
+        points = self.ax_3d.transData.transform(np.column_stack(xyz[:2]))
+        matches = []
+        for i in range(1, 5):
+            ray = points[i] - points[0]
+            length = np.dot(ray, ray)
+            if length < 4:
+                continue
+            fraction = np.dot(np.array([x, y]) - points[0], ray) / length
+            if not 0.15 <= fraction <= 1.05:
+                continue  # The shared vertex cannot identify a crease.
+            closest = points[0] + np.clip(fraction, 0, 1) * ray
+            distance = np.linalg.norm(np.array([x, y]) - closest)
+            if distance <= 8:
+                matches.append((distance, i))
+        matches.sort()
+        if len(matches) > 1 and matches[1][0] - matches[0][0] < 1.5:
+            self._error(
+                "Creases overlap in this view. Click an e1-e4 label or rotate the view."
+            )
+            return None
+        return matches[0][1] if matches else None
+
+    def _motion_tangent(self):
+        """Incoming path direction, used only to distinguish coincident modes."""
+        old = self.session
+        if old.is_family:
+            index = old.branch.family["free_crease"] - 1
+            q = old.branch.family["evaluate"](old.free_angle + 1e-5)
+            if q is not None:
+                return _representative(q.rhos - old.state.rhos) / 1e-5
+        if old.tangent is not None:
+            return old.tangent.copy()
+        data = old.branch.states
+        if len(data) < 2:
+            return None
+        ids = np.argsort(abs(data[:, self.sim.drive_index] - old.state.drive_wrapped))[
+            :2
+        ]
+        a, b = data[ids]
+        dt = b[self.sim.drive_index] - a[self.sim.drive_index]
+        return (b - a) / dt if abs(dt) > 1e-12 else None
+
+    @staticmethod
+    def _direction_distance(a, b):
+        if a is None or b is None or min(np.linalg.norm(a), np.linalg.norm(b)) < 1e-10:
+            return 1.0
+        return 1 - abs(float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))))
+
+    def _session_at_shape(self, model, motion):
+        """Match all four folds and local path before committing a new axis."""
+        from origami_simulator import PathError
+
+        old = self.session
+        q = old.state.rhos
+        index = model.drive_index
+        target = float(_representative(q[index]))
+        if q[index] > 0 and abs(target + np.pi) < 2e-14:
+            target = float(np.pi)
+        movable = motion is not None and abs(motion[index]) > 1e-7
+        matches = []
+        for bid, b in model.branches.items():
+            if b.family is not None:
+                if abs(float(_representative(target - b.family["fixed_drive"]))) > 1e-7:
+                    continue
+                free = b.family["free_crease"] - 1
+                c = b.family["evaluate"](float(q[free]))
+                if c is None or np.linalg.norm(_representative(c.rhos - q)) > 2e-6:
+                    continue
+                neighbor = b.family["evaluate"](float(q[free]) + 1e-5)
+                tangent = (
+                    None
+                    if neighbor is None
+                    else _representative(neighbor.rhos - c.rhos) / 1e-5
+                )
+                score = self._direction_distance(motion, tangent) + (
+                    2 if movable else 0
+                )
+                # Keep the sign of the current +/-pi representative when tied.
+                score += 0.01 * abs(target - b.family["fixed_drive"])
+                matches.append((score, bid, tangent))
+                continue
+            if not any(
+                lo - 1e-7 <= target <= hi + 1e-7 for lo, hi in b.reachable_intervals
+            ):
+                continue
+            data = b.states
+            ids = np.argsort(abs(data[:, index] - target))[:2]
+            if len(ids) < 2:
+                continue
+            a, z = data[ids]
+            dt = z[index] - a[index]
+            if abs(dt) < 1e-12:
+                continue
+            tangent = (z - a) / dt
+            try:
+                reached, tangent, _ = model._advance(
+                    a, float(a[index]), target, tangent
+                )
+            except PathError:
+                continue
+            mismatch = np.linalg.norm(_representative(reached - q))
+            if mismatch > 2e-6:
+                continue
+            score = self._direction_distance(motion, tangent) + mismatch
+            matches.append((score, bid, tangent))
+        matches.sort(key=lambda row: (row[0], row[1]))
+        if not matches:
+            raise ValueError(
+                "Cannot continue the current shape with that crease. Move slightly away from the turning point and try again."
+            )
+        if len(matches) > 1 and abs(matches[1][0] - matches[0][0]) < 1e-4:
+            raise ValueError(
+                "The current shape lies on multiple paths. Move the slider slightly, then select a crease again."
+            )
+        _, bid, tangent = matches[0]
+        new = model.create_session(bid, contact=old.contact)
+        new.state = new._state(q.copy(), float(q[index]), ("DRIVING_CREASE_CHANGED",))
+        new.tangent = motion / motion[index] if movable else tangent
+        new.contact_reference_history = list(old.contact_reference_history)
+        if new.is_family:
+            new.free_angle = float(q[new.branch.family["free_crease"] - 1])
+        if new.contact:
+            new.contact_reference = new._copy_state()
+            new._contact_reference_tangent = new.tangent
+        return new
+
+    def set_driving_crease(self, crease):
+        """Explicit viewer action; immutable input models remain unchanged."""
+        if self._guard:
+            return False
+        if isinstance(crease, bool) or crease not in (1, 2, 3, 4):
+            raise ValueError("driving crease must be e1, e2, e3 or e4")
+        crease = int(crease)
+        if crease == self.sim.driving_crease:
+            return True
+        self._guard = True
+        try:
+            self.status.set_text(f"Updating graph for driving crease e{crease}...")
+            self.fig.canvas.draw_idle()
+            motion = self._motion_tangent()
+            if crease not in self._models:
+                self._models[crease] = type(self.sim)(
+                    self.sim.original_alphas_deg,
+                    driving_crease=crease,
+                    contact=self.session.contact,
+                    verbose=False,
+                    seed_count=self.sim.seed_count,
+                    max_seeds=self.sim.max_seeds,
+                    wrap_margin=self.wrap_margin,
+                    residual_tol=self.sim._core.residual_tol,
+                ).run_simulation(self._resolution)
+            model = self._models[crease]
+            new_session = self._session_at_shape(model, motion)
+            self.driver_history.append(
+                (self.sim.driving_crease, self.session._copy_state())
+            )
+            self.sim, self.session = model, new_session
+            self._other = [i for i in range(4) if i != model.drive_index]
+            self._colors = [self._crease_colors[j] for j in self._other]
+            self.ax_2d.set_xlabel(f"Driving angle e{crease} [rad]")
+            self.slider.label.set_text(f"Fold e{crease}")
+            self.radio.disconnect(self._callback_ids[1])
+            self.radio.disconnect_events()
+            radio_ax = self.radio.ax
+            radio_ax.clear()
+            self._branch_ids = list(model.branches)
+            self.radio = RadioButtons(
+                radio_ax,
+                self._branch_ids,
+                active=self._branch_ids.index(new_session.branch_id),
+            )
+            for label in self.radio.labels:
+                label.set_fontsize(7)
+            callbacks = list(self._callback_ids)
+            callbacks[1] = self.radio.on_clicked(self.set_branch)
+            self._callback_ids = tuple(callbacks)
+            self.last_error = None
+            self.last_movement_success = True
+            self._sync_slider()
+            self.redraw_background()
+            self._render_state()
+            return True
+        except ValueError as error:
+            self._error(error)
+            return False
+        finally:
+            self._guard = False
 
     def _sync_slider(self):
         lo, hi = self._limits()
@@ -336,6 +594,17 @@ class OrigamiViewer:
             point = vertices[i] * (1.07 + 0.03 * i)
             label.set_position((point[0], point[1]))
             label.set_3d_properties(point[2], zdir=None)
+            active = i == self.sim.driving_crease
+            color = "#d97706" if active else self._crease_colors[i - 1]
+            line = self.crease_lines[i - 1]
+            line.set_data(
+                [vertices[0, 0], vertices[i, 0]], [vertices[0, 1], vertices[i, 1]]
+            )
+            line.set_3d_properties([vertices[0, 2], vertices[i, 2]])
+            line.set_color(color)
+            line.set_linewidth(4.5 if active else 1.8)
+            label.set_color(color)
+            label.set_fontweight("bold" if active else "normal")
         center = (vertices.max(axis=0) + vertices.min(axis=0)) / 2
         extent = max(float(np.max(np.ptp(vertices, axis=0))) * 0.6, 0.5)
         self.ax_3d.set_xlim(center[0] - extent, center[0] + extent)
@@ -346,6 +615,7 @@ class OrigamiViewer:
         self.tracker_line.set_xdata([x, x])
         for marker, col in zip(self.tracker_points, self._other):
             marker.set_offsets([[x, y[col]]])
+            marker.set_color(self._crease_colors[col])
         self.ax_3d.set_title(
             f"{self.session.branch_id}\n"
             f"e{self.sim.driving_crease} = {np.rad2deg(x):.3f} deg | "
@@ -358,7 +628,8 @@ class OrigamiViewer:
             message = events
         else:
             messages = {
-                "CONTACT_REFERENCE_RESET": "Contact enabled at current shape; angle reference reset."
+                "CONTACT_REFERENCE_RESET": "Contact enabled at current shape; angle reference reset.",
+                "DRIVING_CREASE_CHANGED": f"Driving crease changed to e{self.sim.driving_crease}; shape preserved.",
             }
             message = (
                 ", ".join(messages.get(e, str(e)) for e in events) if events else ""
@@ -371,6 +642,7 @@ class OrigamiViewer:
             message = (
                 message + " | " if message else ""
             ) + "Drag beyond +/-pi to continue across an allowed seam."
+        message += " | Click a crease or its e1-e4 label to change the driving fold."
         self.status.set_text(message)
         self.status.set_color("#333")
         self.fig.canvas.draw_idle()
@@ -381,6 +653,9 @@ class OrigamiViewer:
         self.radio.disconnect(self._callback_ids[1])
         self.check.disconnect(self._callback_ids[2])
         self.free_slider.disconnect(self._callback_ids[3])
+        for cid in self._mouse_callback_ids:
+            self.fig.canvas.mpl_disconnect(cid)
+        self.radio.disconnect_events()
         plt.close(self.fig)
 
 

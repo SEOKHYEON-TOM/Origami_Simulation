@@ -306,6 +306,7 @@ class OrigamiDegree4Simulator:
         ):
             raise ValueError("resolution must be an integer >=8")
         start = time.perf_counter()
+        self.resolution = int(resolution)
         self.branches = {}
         self._cache.clear()
         self._status_cache.clear()
