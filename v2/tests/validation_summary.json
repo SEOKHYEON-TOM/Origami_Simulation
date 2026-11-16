@@ -1,8 +1,8 @@
 {
   "python": "3.12.14",
   "tests": {
-    "passed": 81,
-    "seconds": 47.51,
+    "passed": 117,
+    "seconds": 72.312,
     "command": "python -m unittest discover -s v2/tests -v"
   },
   "headless_gui": true,
@@ -649,5 +649,432 @@
       }
     ],
     "scope": "Transverse interior intersections of four zero-thickness radial triangular panels; coplanar overlap allowed. Discrete continuation checks, not certified continuous collision detection."
+  },
+  "tessellator_validation": {
+    "matrix_cases": 60,
+    "snapshot_status_counts": {
+      "OK": 41,
+      "DRIVE_EXTREMUM": 11,
+      "MODE_UNAVAILABLE": 2,
+      "UNDERDETERMINED": 6
+    },
+    "temporal_roundtrips": 41,
+    "max_roundtrip_error": 3.1086244689504383e-15,
+    "maximum_closure": 1.5788493886057865e-15,
+    "benchmarks": [
+      {
+        "kind": "baseline_snapshot",
+        "units": 2,
+        "frames": 12,
+        "seconds": 0.06160576000183937,
+        "peak_bytes": 83906,
+        "core_calls": {
+          "roots": 24,
+          "recover": 48
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "new_snapshot",
+        "units": 2,
+        "frames": 12,
+        "seconds": 0.07094304500060389,
+        "peak_bytes": 83492,
+        "core_calls": {
+          "roots": 13,
+          "recover": 26
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "new_temporal",
+        "units": 2,
+        "frames": 12,
+        "seconds": 0.07668648699836922,
+        "peak_bytes": 49548,
+        "core_calls": {
+          "roots": 14,
+          "recover": 28
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "baseline_snapshot",
+        "units": 10,
+        "frames": 12,
+        "seconds": 0.34227126199766644,
+        "peak_bytes": 32279,
+        "core_calls": {
+          "roots": 120,
+          "recover": 240
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "new_snapshot",
+        "units": 10,
+        "frames": 12,
+        "seconds": 0.3075703640024585,
+        "peak_bytes": 95169,
+        "core_calls": {
+          "roots": 13,
+          "recover": 26
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "new_temporal",
+        "units": 10,
+        "frames": 12,
+        "seconds": 0.33882250700116856,
+        "peak_bytes": 100092,
+        "core_calls": {
+          "roots": 14,
+          "recover": 28
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "baseline_snapshot",
+        "units": 50,
+        "frames": 12,
+        "seconds": 1.7537189510003373,
+        "peak_bytes": 80431,
+        "core_calls": {
+          "roots": 600,
+          "recover": 1200
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "new_snapshot",
+        "units": 50,
+        "frames": 12,
+        "seconds": 1.48276138899746,
+        "peak_bytes": 320191,
+        "core_calls": {
+          "roots": 13,
+          "recover": 26
+        },
+        "sampled_maps": 0
+      },
+      {
+        "kind": "new_temporal",
+        "units": 50,
+        "frames": 12,
+        "seconds": 1.6224307860029512,
+        "peak_bytes": 334464,
+        "core_calls": {
+          "roots": 14,
+          "recover": 28
+        },
+        "sampled_maps": 0
+      }
+    ],
+    "baseline_geometry": [
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          160
+        ],
+        "iout": 2,
+        "max_fold_change": 5.551115123125783e-16,
+        "max_vertex_change": 9.992007221626409e-16
+      },
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          160
+        ],
+        "iout": 3,
+        "max_fold_change": 3.3306690738754696e-16,
+        "max_vertex_change": 1.4432899320127035e-15
+      }
+    ],
+    "real_desktop_mouse_tested": false,
+    "headless_widgets_tested": true,
+    "global_strip_collision_checked": false,
+    "contact_scope": "individual zero-thickness vertices",
+    "baseline_commit": "2847cce32dbc4aebf8ae80e85422be3c0d74a93e",
+    "solver_baseline_models": [
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          160
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 162
+      },
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          160
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 162
+      },
+      {
+        "alphas": [
+          60,
+          90,
+          135,
+          75
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 117
+      },
+      {
+        "alphas": [
+          60,
+          90,
+          135,
+          75
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 161
+      },
+      {
+        "alphas": [
+          70,
+          80,
+          70,
+          100
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 136
+      },
+      {
+        "alphas": [
+          70,
+          80,
+          70,
+          100
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 136
+      },
+      {
+        "alphas": [
+          40,
+          80,
+          50,
+          110
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 116
+      },
+      {
+        "alphas": [
+          40,
+          80,
+          50,
+          110
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 104
+      },
+      {
+        "alphas": [
+          70,
+          70,
+          120,
+          110
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 124
+      },
+      {
+        "alphas": [
+          70,
+          70,
+          120,
+          110
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 162
+      },
+      {
+        "alphas": [
+          61,
+          91,
+          136,
+          76
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 100
+      },
+      {
+        "alphas": [
+          61,
+          91,
+          136,
+          76
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 162
+      },
+      {
+        "alphas": [
+          60,
+          60,
+          120,
+          120
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 241
+      },
+      {
+        "alphas": [
+          60,
+          60,
+          120,
+          120
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 324
+      },
+      {
+        "alphas": [
+          70,
+          110,
+          70,
+          110
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 241
+      },
+      {
+        "alphas": [
+          70,
+          110,
+          70,
+          110
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 241
+      },
+      {
+        "alphas": [
+          90,
+          90,
+          90,
+          90
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 403
+      },
+      {
+        "alphas": [
+          90,
+          90,
+          90,
+          90
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 403
+      },
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          159.999
+        ],
+        "drive": 1,
+        "exact_arrays": true,
+        "math_states": 156
+      },
+      {
+        "alphas": [
+          70,
+          20,
+          110,
+          159.999
+        ],
+        "drive": 4,
+        "exact_arrays": true,
+        "math_states": 156
+      }
+    ],
+    "fresh_mat_checks": [
+      {
+        "file": "case_1_kinematics.mat",
+        "units": 2,
+        "snapshot_deg": 45,
+        "canonical_coupling": true
+      },
+      {
+        "file": "case_2_kinematics.mat",
+        "units": 2,
+        "snapshot_deg": 45,
+        "canonical_coupling": true
+      },
+      {
+        "file": "case_3_kinematics.mat",
+        "units": 2,
+        "snapshot_deg": 45,
+        "canonical_coupling": true
+      },
+      {
+        "file": "case_4_kinematics.mat",
+        "units": 2,
+        "snapshot_deg": 45,
+        "canonical_coupling": true
+      },
+      {
+        "file": "case_5_kinematics.mat",
+        "units": 2,
+        "snapshot_deg": 45,
+        "canonical_coupling": true
+      },
+      {
+        "file": "strip_debug.mat",
+        "joint_determinant": 1.0
+      }
+    ],
+    "source_sha256": {
+      "v2/origami_tesellator_1D.py": "07699addf61557d8f95bf53cd5731a255083b0e5a959afcc62883cde0d1172c7",
+      "v2/origami_forward_kinematics.py": "8f1b7c4f2ede1c981b6cac7bc267a59133bccb305d208b4109543d29d290fbeb",
+      "v2/origami_simulator.py": "a4c9a87ecfaf9f44dc281b738e231e457daee3c9613bd249a7f1eb5c1321e993"
+    },
+    "stage_gates": {
+      "classification_mappings": 12,
+      "normal_mapping_baselines": 9,
+      "shared_selection_tests": 10,
+      "temporal_contact_tests_at_stage3": 18,
+      "final_tests": 117,
+      "new_tests": 35
+    },
+    "guide_validation": {
+      "simulator_commands": 17,
+      "python_examples": 8,
+      "headless": true
+    }
   }
 }

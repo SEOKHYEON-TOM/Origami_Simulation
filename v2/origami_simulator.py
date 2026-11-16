@@ -148,6 +148,10 @@ class OrigamiDegree4Simulator:
             setattr(self, name, np.empty((0, 4)))
         self.singular_states = []
         self.metrics = {}
+        self.api_metrics = dict(
+            candidate_queries=0, candidate_solves=0, continuation_calls=0
+        )
+        self._configuration_cache = {}
 
     @property
     def driving_crease(self):
@@ -160,6 +164,119 @@ class OrigamiDegree4Simulator:
 
     def solve_states(self, drive):
         return self._core.solve(float(drive))
+
+    def configuration_solutions(self, drive):
+        """Atomic candidate/status/family query for consumers such as a strip.
+
+        Angles and candidates use the original public crease order. Families
+        explicitly describe underdetermined fixed-drive states. Returned arrays
+        are copies, so consumers cannot corrupt a shared immutable model cache.
+        """
+        from copy import deepcopy
+
+        drive = float(drive)
+        if not np.isfinite(drive):
+            raise ValueError("finite drive required")
+        t = float(wrap_angle(drive))
+        if drive > 0 and abs(t + np.pi) < 2e-14:
+            t = float(np.pi)
+        key = (round(t, 15), self._core.residual_tol)
+        self.api_metrics["candidate_queries"] += 1
+        if key not in self._configuration_cache:
+            if len(self._configuration_cache) >= 4096:
+                self._configuration_cache.pop(next(iter(self._configuration_cache)))
+            cs = self._core.solve(t)
+            self._configuration_cache[key] = dict(
+                candidates=tuple(deepcopy(cs)),
+                status=self._core.last_status,
+                families=tuple(dict(f) for f in self._core.last_families),
+                details=dict(self._core.last_details),
+            )
+            self.api_metrics["candidate_solves"] += 1
+        item = self._configuration_cache[key]
+        return dict(
+            candidates=deepcopy(item["candidates"]),
+            status=item["status"],
+            families=tuple(dict(f) for f in item["families"]),
+            details=dict(item["details"]),
+        )
+
+    def kinematic_intervals(self):
+        """Representative drive domains, without building a sampled branch map."""
+        if not hasattr(self, "_drive_domains"):
+            self._drive_domains = self._domains()
+        return tuple(self._drive_domains)
+
+    def continue_configuration(self, rhos, target, tangent=None, *, contact=False):
+        """Continue four original-order folds without changing the driving crease.
+
+        This adapter preserves exact incoming limits at fixed-drive continua:
+        A,C=O(delta^2), B=O(delta) imply p*q=0, hence free fold 0 or pi.
+        It leaves the established solver/map APIs and their samples unchanged.
+        """
+        q = np.asarray(rhos, float).copy()
+        if q.shape != (4,) or not np.isfinite(q).all() or not np.isfinite(target):
+            raise ValueError("four finite folds and a finite target required")
+        if closure_error(self.original_alphas, q) > self._core.residual_tol:
+            raise PathError("NUMERICAL_FAILURE", "initial rotation closure")
+        self.api_metrics["continuation_calls"] += 1
+        t, target = float(q[self.drive_index]), float(target)
+        self._check_drive_path(t, target)
+        if contact:
+            self._require_contact(q)
+        if abs(target - t) < 1e-13:
+            return q, None if tangent is None else np.asarray(tangent).copy(), None
+        goals = list(
+            np.linspace(t, target, max(1, int(np.ceil(abs(target - t) / 0.035))) + 1)[
+                1:
+            ]
+        )
+        lo, hi = sorted((t, target))
+        goals.extend(
+            k * np.pi
+            for k in range(int(np.floor(lo / np.pi)) - 1, int(np.ceil(hi / np.pi)) + 2)
+            if lo + 1e-12 < k * np.pi < hi - 1e-12
+        )
+        goals = sorted(set(goals), reverse=target < t)
+        candidate = None
+        for goal in goals:
+            if abs(goal - t) < 1e-13:
+                q[self.drive_index] = goal
+                t = float(goal)
+                continue
+            packet = (
+                self.configuration_solutions(goal)
+                if abs(np.sin(goal)) <= 32 * np.finfo(float).eps
+                else None
+            )
+            if packet is not None and packet["families"]:
+                dt = goal - t
+                predicted = q if tangent is None else q + np.asarray(tangent) * dt
+                options = [
+                    f["evaluate"](free)
+                    for f in packet["families"]
+                    for free in (0.0, np.pi)
+                ]
+                options = [c for c in options if c is not None]
+                lifted = [lift_angles(c.rhos, predicted) for c in options]
+                scores = [np.linalg.norm(v - predicted) for v in lifted]
+                ids = np.argsort(scores)
+                if not len(ids) or (
+                    len(ids) > 1 and abs(scores[ids[0]] - scores[ids[1]]) < 1e-8
+                ):
+                    raise PathError("AMBIGUOUS", "incoming continuum limit")
+                v, candidate = lifted[ids[0]], options[ids[0]]
+                v[self.drive_index] = goal
+                tangent = (v - q) / dt if abs(dt) > 1e-13 else tangent
+                q = v
+            else:
+                q, tangent, candidate = self._step(q, t, float(goal), tangent)
+            t = float(goal)
+            if closure_error(self.original_alphas, q) > self._core.residual_tol:
+                raise PathError("NUMERICAL_FAILURE", "continued rotation closure")
+            if contact:
+                self._require_contact(q)
+        return q, tangent, candidate
 
     def _solve(self, drive):
         key = (round(float(wrap_angle(drive)), 15), self._core.residual_tol)

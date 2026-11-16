@@ -4,7 +4,7 @@
 개발 이력과 수학적 도출은 [UPDATE_PLAN.md](./UPDATE_PLAN.md)에 별도로 기록한다.
 이 안내를 읽기 위해 개발 문서를 먼저 읽을 필요는 없다.
 
-- 실행 예제의 기준 코드: `7540d27` 및 해당 코드를 포함하는 후속 커밋
+- 실행 예제의 기준: 이 안내서와 같은 커밋에서 받은 v2 전체 코드. 새 strip API는 과거 단일 정점 전용 버전과 구분한다.
 - 확인일: 2026-11-16
 - 명령어 환경: Windows PowerShell, 저장소 위치 `C:\python\Origami_Simulation`
 - 수치·실행 확인 환경: Python 3.12.14, NumPy 2.3.5, Matplotlib 3.10.8, headless Agg
@@ -615,11 +615,10 @@ CSV 열 순서는 원래 rho1…rho4이고 단위는 radian이다.
 
 ## 9. Tessellator와 forward kinematics 실행
 
-### 9.1 실행 경로와 출력 폴더
+### 9.1 기본 데모와 출력 폴더
 
-두 파일은 simulator의 CLI 옵션을 공유하지 않는다. `--alphas`, `--branch`, `--no-show`를 뒤에 붙여
-설정하는 방식 대신 현재 파일 하단의 데모 구성 또는 Python API를 사용한다.
-`.mat`은 현재 작업 디렉토리에 생성되므로 결과 폴더를 별도로 두는 것을 권한다.
+두 파일은 simulator의 CLI 옵션을 공유하지 않는다. 설정은 Python API 또는 파일 하단의 데모 구성을 사용한다.
+`.mat`은 현재 작업 폴더에 생성되므로 별도 폴더를 권한다.
 
 ```powershell
 New-Item -ItemType Directory -Force C:\python\Origami_results | Out-Null
@@ -628,40 +627,129 @@ python C:\python\Origami_Simulation\v2\origami_tesellator_1D.py
 Pop-Location
 ```
 
-현재 tessellator 기본 실행은 `[70,70,120,110]`, `iout=3`, 2개 유닛의 입력 -20° 예제를 사용한다.
-Cobweb 그래프가 나타나며 **그 창을 닫으면** 뒤의 배치 디버그 출력과 `strip_debug.mat` 저장이 이어진다.
-기본 main이 곧바로 새 simulator와 같은 3D branch viewer를 여는 것은 아니다.
+기본 데모는 `[70,70,120,110]`, iout=3, 2유닛, 입력 -20°다.
+Cobweb 창을 닫으면 같은 선택기로 계산한 진단 로그와 `strip_debug.mat` 저장이 이어진다.
+현재 기본 부호 convention에서 첫 출력은 약 +24.65°이며, 셀 간 전파와 패널 배치 잔차를 확인할 수 있다.
+전역 충돌 인증을 의미하지 않는다. 전체 strip이 정의되지 않으면 종료 이유를 확인한다.
 
-| 출력 | 의미 |
-| --- | --- |
-| Cobweb 그림 | 입력·출력각을 유닛 사이에 전파하는 과정 |
-| `valid/total_units` | 전체 strip 중 계산·배치에 성공한 유닛 수 |
-| 배치·법선 디버그 로그 | 인접 유닛의 연결 방향·프레임 점검 |
-| `strip_debug.mat` | 해당 스냅샷의 정점·면·연결·배치 진단 정보 |
+### 9.2 3D strip slider 열기
 
-### 9.2 Strip 3D slider를 Python에서 여는 예
-
-다음 Python 코드는 저장소 루트 기준이다.
+아래 Python 코드는 저장소 루트 기준이다. 각도 인자는 degree라고 명시된 경우를 제외하고 radian이다.
 
 ```python
 import sys
+import numpy as np
 sys.path.insert(0, "v2")
 from origami_tesellator_1D import OrigamiTesellator1D
 
 strip = OrigamiTesellator1D(
-    cell_configs=[{"alphas": [70, 20, 110, 160], "sigma": 1, "iout": 3}],
-    num_periods=2, lengths=(1.0, 1.0, 1.0), verbose=False,
+    cell_configs=[{"alphas": [70,20,110,160], "sigma": 1, "iout": 2}],
+    num_periods=5, lengths=(1,1,1), contact=True, verbose=False,
 )
 strip.setup_interactive_viewer()
 ```
 
-`cell_configs`는 한 주기의 유닛 목록, 전체 유닛 수는 `len(cell_configs)*num_periods`다.
-`sigma`는 출력 부호 조건이고 `iout`은 tessellator 자체 번호의 출력 주름 1,2,3이다.
-Tessellator는 입력 주름을 c0로 부르는 별도 convention을 사용하므로 simulator의 공개 e1…e4와
-번호만 보고 그대로 대응시키지 않는다. 내부 `CLV`와 solver index 변환이 대응을 관리한다.
-`compute_strip_kinematics`는 radian, `plot_3d(rho0_deg=...)`와 `export_to_mat(..., rho0_deg=...)`는 degree를 받는다.
+주 slider는 c0 입력각을 degree로 표시한다. 이전 프레임의 경로를 유지하며 업데이트하고,
+요청이 실패하면 마지막 전체 허용 형상과 slider 위치를 유지한다. 오류와 실패 유닛은 아래에 표시된다.
+`Local contact` checkbox는 각 유닛의 각도 제한·패널 관통 검사다.
+이미 관통 중이거나 연속 각도가 제한 밖이면 ON 전환을 거부한다.
+전역 strip 충돌·두께·층 순서는 검사하지 않는다.
+Strip GUI의 입력 범위는 [-180°,180°]이며 단일 정점 viewer와 같은 주기 wrap UI는 추가하지 않았다.
 
-### 9.3 Forward kinematics 데모
+`len(cell_configs)*num_periods`가 전체 유닛 수다. iout=1,2,3은 tessellator의 출력 c1,c2,c3다.
+Tessellator는 입력을 c0라고 부르며 simulator의 e1…e4와 번호만으로 대응시키지 않는다.
+`get_fold_angles(t)`는 기하 유형과 무관하게 c0,c1,c2,c3 순서다.
+기존 `rhos`의 solver 저장 순서는 호환성을 위해 남겨 두었으므로 물리 주름 조회에는 getter를 사용한다.
+
+### 9.3 Sigma·mode·branch 선택
+
+**기본 sigma는 c0와 반대 주름 c2의 부호 관계**다. iout=1/3에서도 같은 의미를 사용한다.
+이전 주 계산의 출력 주름 부호 의미가 필요하면 sigma_role="output"을 명시한다.
+Sigma만으로 여러 후보가 남으면 AMBIGUOUS이며 근 반환 순서로 고르지 않는다.
+
+```python
+query = OrigamiTesellator1D(
+    [{"alphas": [60,90,135,75], "iout": 1, "sigma": -1}],
+    num_periods=1, contact=False, verbose=False,
+)
+choices = query.available_configurations(0.6)
+print([(c["mode_id"], c["folds"]) for c in choices["candidates"]])
+```
+
+이 예제의 canonical mode는 unique_c0와 unique_c1이다.
+명시적 mode_id 또는 branch_id가 초기 sigma hint보다 우선한다.
+
+```python
+selected = OrigamiTesellator1D(
+    [{"alphas": [60,90,135,75], "iout": 1, "sigma": -1,
+      "sigma_role": "output", "mode_id": "unique_c1"}],
+    num_periods=1, contact=False, verbose=False,
+)
+selected.compute_strip_kinematics(0.6)
+print(np.rad2deg(selected.get_fold_angles(0)))
+```
+
+`initial_state`에는 c0…c3 순서의 네 radian 값을 넣어 경로를 지정할 수도 있다.
+특이점에서 상태만으로 다음 경로가 정해지지 않으면 mode/branch가 추가로 필요하다.
+`available_configurations`의 후보는 대표 각도이고, 추적 결과의 folds는 연속 각도다.
+기하·구동축이 다른 셀의 mode 이름을 문자열만으로 같은 물리 경로라고 판단하지 않는다.
+
+### 9.4 Snapshot·시간 추적·진단
+
+```python
+count = strip.compute_strip_kinematics(0.6)  # 독립 snapshot, 성공 prefix 개수
+result = strip.update(0.8)                  # 이전 전체 strip에서 시간 추적
+print(result.complete, result.termination)
+preview = strip.preview(0.9)                # accepted pose를 변경하지 않는 조회
+ax = strip.plot_cobweb(np.rad2deg(0.8))
+strip.debug_kinematics(np.rad2deg(0.8))
+```
+
+`compute_strip_kinematics(..., track=True)`도 시간 추적을 요청한다.
+시간 추적 실패 시 `last_attempt`는 실패 결과이고 `last_result`는 이전 전체 허용 pose다.
+독립 snapshot은 성공한 prefix를 저장하며 미계산 rhos 행은 NaN이다.
+진단·Cobweb·preview·export는 현재 accepted pose를 덮어쓰지 않는다.
+이력을 버리고 설정의 초기 선택으로 돌아가려면 `strip.reset()`을 사용한다.
+
+Cobweb 배경은 경로별 분리 곡선과 family를 모두 표시하고, 주황색 전파는 실제 공통 계산 결과다.
+해가 없는 구간을 보간하거나 다른 근을 한 함수로 합치지 않는다.
+`atlas_resolution`은 필요한 경로 식별용 map의 설정이며 기본 129다.
+`plot_cobweb(..., resolution=...)`은 표시 행 수의 상한이고 경로 선택을 바꾸지 않는다.
+
+### 9.5 Family와 고립된 Contact
+
+고정 입력각에서 다른 각도가 자유로우면 자동으로 0을 대입하지 않는다.
+추가 파라미터가 없을 때는 UNDERDETERMINED다.
+
+```python
+family_strip = OrigamiTesellator1D(
+    [{"alphas": [90,90,90,90], "iout": 3, "sigma": 1, "free_angle": 0.4}],
+    num_periods=1, contact=True, verbose=False,
+)
+family_strip.setup_interactive_viewer(initial_rho0_deg=0)
+```
+
+주 slider는 고정되고 Free c1 slider로 해당 자유각을 움직인다.
+API에서는 `update(0, free_angles={0:0.8})`처럼 유닛 번호별 자유각을 radian으로 지정한다.
+아직 경로를 지정하지 않은 family에서 정규 경로로 나가는 이동은 임의로 선택하지 않는다.
+Null fold의 출력 0이 다음 유닛을 family에 놓는 경우에도 그 유닛의 추가 자유도가 필요할 수 있다.
+
+`[70,110,70,110]`의 collinear_other_c0를 입력 0에 명시적으로 초기화하면
+Contact에서 [0°,180°,0°,-180°]가 되고 그 경로에서 이동이 차단된다.
+이는 Free slider로 다른 자유도를 구동하는 family와 구별한다.
+
+### 9.6 길이와 유한 선분 공유
+
+`lengths`는 c1,c2,c3의 로컬 길이이고 c0는 1을 기준으로 scale_factor^unit_index가 적용된다.
+기본 `joint_policy="axis"`는 축 방향·접합 법선·원점을 맞추고 유한 길이를 그대로 보존한다.
+유한 선분의 양 끝까지 공유해야 하면 `joint_policy="shared_edge"`를 지정한다.
+
+예를 들어 lengths=(1,1,2), iout=3, scale_factor=1은 축 연결이 가능해도 유한 끝점이 1만큼 어긋난다.
+Axis 정책은 `last_result.joints`에 edge_error를 기록하고, shared_edge 정책은
+JOINT_INCOMPATIBLE로 거부한다. 길이를 조용히 늘리거나 줄이지 않는다.
+설정·기하·길이·정책 변경은 새 strip 구성으로 적용한다.
+
+### 9.7 Forward kinematics와 궤적의 실패 구간
 
 ```powershell
 New-Item -ItemType Directory -Force C:\python\Origami_results | Out-Null
@@ -670,20 +758,40 @@ python C:\python\Origami_Simulation\v2\origami_forward_kinematics.py
 Pop-Location
 ```
 
-현재 기본값은 기준 섹터각 `[70,20,110,160]`, 2개 유닛, 입력 -150°…-20°의 100점 sweep이다.
-난수 시드 24로 섹터각을 각 성분 ±1° 범위에서 바꾼 5개 비교 strip도 계산한다.
-기준·변형 사례의 말단 궤적, 물리적 입출력 주름, 상대 SE(3) frame과 평면성 로그를 볼 수 있다.
-기준 실행에서는 비교 사례 다섯 개의 궤적이 평면으로 판정됐다. 임의 입력에서도 평면이라는 뜻은 아니다.
+기준 `[70,20,110,160]`의 2유닛, 입력 -150°…-20°의 100프레임과
+난수 시드 24의 ±1° 섹터각 변형 5개를 비교한다.
+실제 입출력 주름의 각도와 패널 법선 이등분 frame으로 상대 위치·회전을 계산한다.
+입력 frame의 반각 부호와 raw 인덱스 오류를 수정했으므로 과거 FK 숫자와 달라질 수 있다.
 
-성공한 변형 사례에 대해 `case_1_kinematics.mat` … `case_5_kinematics.mat`이 생성된다.
-현재 main의 export 호출은 **rho0_deg=45°의 스냅샷**을 저장한다.
-화면 sweep의 최종 입력 -20° 상태나 전체 궤적 시계열을 저장하는 파일로 해석하지 않는다.
-파일의 `meta.rho0_deg`, `valid_units`를 확인한다.
-`vertices`, `faces`, `backbone`, `e1_pts`, `e3_pts` 등이 들어가고 MATLAB faces는 1부터 시작한다.
+`run_trajectory_sweep`는 기본 시간 추적이며 실패 프레임도 NaN·입력각·상태로 남겨 선을 끊는다.
+`track=False`는 독립 snapshot sweep이다. `include_failures=False`를 요청하면 성공 프레임만 반환하지만
+그 경우에도 segment_id/sample_index로 단절을 구분해 그려야 한다.
+`extract_relative_se3(..., compute=False)`는 현재 전체 pose를 재계산하지 않고 읽는다.
+몇 개 점만 있거나 실패한 결과를 무조건 평면 궤적으로 판정하지 않는다.
 
-두 strip 모듈은 기존 부호·전파·배치 흐름을 사용한다.
-단일 정점 viewer의 새 branch 메뉴, 주기 slider, 패널 관통 검사가 strip 전체에 자동 적용되지는 않는다.
-특히 tessellator의 contact 설정을 전역 strip 충돌 검사 완료로 해석하지 않는다.
+성공한 변형 사례는 `case_N_kinematics.mat`을 저장한다.
+이는 **입력 45°의 독립 snapshot**이며 sweep 최종 -20°나 전체 시계열 파일이 아니다.
+저장할 상태가 정의되지 않으면 이유를 출력하고 해당 snapshot을 생략한다.
+
+### 9.8 MAT 저장과 downstream 호환성
+
+`export_to_mat(path, rho0_deg=45)`는 독립 snapshot을 조회하며 accepted pose를 변경하지 않는다.
+현재 경로를 따라 조회하려면 track=True, 부분 strip을 명시적으로 저장하려면 allow_partial=True를 사용한다.
+기본값은 전체 strip이 정의된 경우에만 저장한다.
+
+| 저장 데이터 | 뜻 |
+| --- | --- |
+| vertices, faces | 삼각 면 mesh. MATLAB faces는 1부터 시작 |
+| backbone, e1_pts, e3_pts | 원점 경로와 c1/c3 끝점 |
+| fold_angles | c0,c1,c2,c3 순서의 radian 배열 |
+| solver_rhos | 기존 solver 순서의 호환 배열 |
+| mode_ids, branch_ids | 각 유닛의 선택 경로 |
+| meta | 입력각·성공/전체 유닛 수·상태·Contact 범위·joint 정책 |
+
+전역 strip 비관통, 두께, 층 순서와 완전한 CCD는 구현하지 않았다.
+상세 API·검증·성능·미지원 범위는 [TESSELLATOR_UPDATE_PLAN.md](./TESSELLATOR_UPDATE_PLAN.md)에 기록한다.
+v1의 inverse/helix/tube 코드는 보관 상태이며, v2로 옮길 때도 raw 각도 인덱스 대신 공통 getter를 사용해야 한다.
+
 
 <a id="headless"></a>
 
@@ -718,8 +826,8 @@ python -m unittest discover -s .\v2\tests -v
 ```
 
 현재 기준 코드에는 회전 폐합, 대칭·재번호화, branch·wrap, 주름 클릭,
-Contact·관통·고립 경계 등을 검사하는 81개 테스트가 있다.
-`Ran 81 tests ... OK`가 기준 실행 결과다. 향후 테스트가 추가되면 개수는 늘 수 있다.
+Contact·관통·고립 경계 등을 검사하는 117개 테스트가 있다.
+`Ran 117 tests ... OK`가 기준 실행 결과다. 향후 테스트가 추가되면 개수는 늘 수 있다.
 이는 모든 기하·충돌 상황의 수학적 전체성을 증명하는 결과가 아니다.
 
 <a id="troubleshooting"></a>
