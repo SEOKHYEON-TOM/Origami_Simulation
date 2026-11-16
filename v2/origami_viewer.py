@@ -87,6 +87,9 @@ class OrigamiViewer:
         self.poly.set_facecolor(["lightgray", "lightblue", "lightgreen", "lightcoral"])
         self.ax_3d.add_collection3d(self.poly)
         self.vertices = self.ax_3d.scatter([], [], [], c="black", s=25)
+        self.crease_labels = [
+            self.ax_3d.text(0, 0, 0, f"e{i}", fontsize=9) for i in range(1, 5)
+        ]
         self.tracker_line = self.ax_2d.axvline(0, c="gray", ls="--", alpha=0.7)
         self.tracker_points = [
             self.ax_2d.scatter([], [], c=c, s=48, zorder=5) for c in self._colors
@@ -267,9 +270,12 @@ class OrigamiViewer:
             return False
         self._guard = True
         try:
-            accepted = self.session.set_contact(bool(contact))
+            accepted = self.session.set_contact(bool(contact), reanchor=True)
             if accepted is False:
-                self._error("CONTACT_LIMIT: current path cannot enable contact bounds.")
+                self._error(
+                    self.session.last_error
+                    or "CONTACT_LIMIT: cannot enable contact bounds."
+                )
             else:
                 self.last_error = None
                 self.last_movement_success = True
@@ -294,7 +300,7 @@ class OrigamiViewer:
         for line in self._graph_lines:
             line.remove()
         self._graph_lines.clear()
-        pieces = self.sim.plot_data(self.session.branch_id, self.session.contact)
+        pieces = self.session.plot_data()
         for part_idx, part in enumerate(pieces):
             for piece in _plot_pieces(part):
                 if not len(piece):
@@ -326,6 +332,10 @@ class OrigamiViewer:
         vertices = np.asarray(vertices, dtype=float)
         self.poly.set_verts(faces)
         self.vertices._offsets3d = tuple(vertices[:, k] for k in range(3))
+        for i, label in enumerate(self.crease_labels, start=1):
+            point = vertices[i] * (1.07 + 0.03 * i)
+            label.set_position((point[0], point[1]))
+            label.set_3d_properties(point[2], zdir=None)
         center = (vertices.max(axis=0) + vertices.min(axis=0)) / 2
         extent = max(float(np.max(np.ptp(vertices, axis=0))) * 0.6, 0.5)
         self.ax_3d.set_xlim(center[0] - extent, center[0] + extent)
@@ -347,7 +357,12 @@ class OrigamiViewer:
         if isinstance(events, str):
             message = events
         else:
-            message = ", ".join(map(str, events)) if events else ""
+            messages = {
+                "CONTACT_REFERENCE_RESET": "Contact enabled at current shape; angle reference reset."
+            }
+            message = (
+                ", ".join(messages.get(e, str(e)) for e in events) if events else ""
+            )
         if getattr(self.session, "is_family", False):
             message = (
                 message + " | " if message else ""

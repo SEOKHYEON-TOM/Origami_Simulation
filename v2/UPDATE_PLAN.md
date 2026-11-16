@@ -5,7 +5,9 @@
 각 모듈의 기능, 재현 가능한 문제, 개선 방향과 완료 기준을 누적한다.
 **1–9절은 변경 전 코드에 대한 검토 이력**이다. 당시의 결함, 행 번호,
 미완료 체크리스트는 그 기준 커밋의 상태를 나타내며 현재 구현 상태와 구분한다.
-진행 중인 구현과 최종 검증 결과는 문서 끝의 구현 기록에서 정리한다.
+현재 구현과 최종 검증 결과는 문서 끝의 구현 기록에서 정리한다.
+
+**[Windows 실행·crease 번호·branch 이름·Contact 전환 안내 바로가기](#simulator-guide)**
 
 - 검토 기준: 39628b5d9ab1aafdd20dec95305d44dc5edf2c51
 - 대상: [origami_simulator.py](./origami_simulator.py), 총 694개 내용 행과 마지막 개행
@@ -891,9 +893,10 @@ Native Matplotlib slider가 초과량을 먼저 잘라버리는 것을 피하기
 정상적인 seam 통과는 branch ID를 유지하며 ANGLE_WRAP 이벤트를 기록한다.
 
 contact=True는 구동각을 [-pi,pi]로 제한하고 자동 주기 이동을 적용하지 않는다.
-contact=False에서 True로 바꿀 때 현재 연속 구동각과 접힘각이 bound 밖이면
-전환을 거부하고 checkbox 및 기존 세션 상태를 되돌린다.
-다른 branch로 옮기거나 상태를 principal 값으로 덮어 허용시키지 않는다.
+Python API의 기본 set_contact(True)는 누적 각도가 bound 밖이면 전환을
+거부한다. 현재 UI checkbox는 명시적인 reanchor=True 정책으로, 같은 형상에서
+새 각도 제한 기준을 설정할 수 있다. 과거 이력을 보존하며 다른 branch로
+이동하지 않는다. 정책과 실제 사용법은 12.7절을 따른다.
 
 고정 구동각 family를 선택하면 주 구동 slider 대신 별도의 free-fold
 slider로 그 family의 자유 접힘각을 조절한다.
@@ -955,7 +958,7 @@ branch1/2와 math_branch1/2는 기존 코드 호환을 위한 첫 두 일반 경
 
     MPLBACKEND=Agg MPLCONFIGDIR=/tmp/origami-test-mpl python -m unittest discover -s v2/tests -v
 
-현재 자동 검증은 **38개 테스트 통과, 약 11.872초**다. 검사 범위는 다음과 같다.
+이 구현 시점의 자동 검증은 **38개 테스트 통과, 약 11.872초**였다. 최신 결과는 12.8절에 있다. 검사 범위는 다음과 같다.
 
 - 여덟 기준 입력과 원래 e1–e4 구동 주름에서의 독립 회전 폐합
 - 0에서의 정확한 부호 복원, 반각 무한대 근, near-flat 기울기
@@ -1156,7 +1159,179 @@ alpha=(a,a,b,c)는 인접각 하나가 같다는 조건일 뿐 전체 반사 대
 
     python -m unittest discover -s v2/tests -v
 
-현재 전체 43개 테스트 통과, 약 11.981초다. 기존 38개 검증과 그 성능 표는
+이 검증 시점의 전체 43개 테스트 통과, 약 11.981초였다. 기존 38개 검증과 그 성능 표는
 이전 구현 시점의 기록으로 유지한다. 이번에는 새 모드를 추가하지 않았으며,
 판별식의 경계 허용오차와 관련 설명을 보완했다. 작업용 독립 재현 스크립트와
 상세 결과는 work/symmetry-validation에 저장했다.
+
+<a id="simulator-guide"></a>
+
+## 12. Windows 실행, crease 번호, branch 이름과 Contact 전환
+
+### 12.1 먼저 최신 코드 받기
+
+PowerShell에서 기본 clone 폴더 이름을 사용하는 경우:
+
+    cd C:\python\Origami_Simulation
+    git pull --ff-only
+
+아래 실행문은 모두 저장소 루트를 현재 디렉토리로 가정한다.
+파일을 직접 복사했다면 origami_simulator.py만이 아니라 v2의 관련 Python
+파일들도 함께 갱신한다. alpha의 단위는 degree, slider와 Python 상태의
+기본 단위는 radian이다. --resolution을 생략하면 1000이다.
+
+### 12.2 Crease와 sector 번호를 정하는 방법
+
+공통 정점을 O라고 하고, 펼쳐진 재료 위에서 순환하는 주름을 e1,e2,e3,e4로
+부른다. 섹터각 입력은 다음 순서를 뜻한다.
+
+| 입력 | 두 경계 주름 | 해당 주름의 접힘각 |
+| --- | --- | --- |
+| alpha1 | e1과 e2 사이 | rho1은 e1에서의 접힘각 |
+| alpha2 | e2와 e3 사이 | rho2는 e2에서의 접힘각 |
+| alpha3 | e3과 e4 사이 | rho3은 e3에서의 접힘각 |
+| alpha4 | e4와 e1 사이 | rho4는 e4에서의 접힘각 |
+
+즉 alpha1 자체가 e1의 접힘각은 아니다. e1 양옆 패널의 섹터각은 alpha4와
+alpha1이고, e2 양옆은 alpha1과 alpha2다. 번호는 입력 순서를 기준으로 정하며
+기하 유형이나 대칭 판정에 따라 공개 번호를 바꾸지 않는다.
+
+    e1 --alpha1--> e2 --alpha2--> e3 --alpha3--> e4 --alpha4--> e1
+
+--drive 4는 이 원래 번호의 e4를 구동한다. 내부에서는 계산 편의를 위해
+shift=4-driving_crease만큼 순환 이동해 구동 주름을 내부 e4로 맞추고,
+결과를 다시 원래 번호로 되돌린다. 따라서 --drive 1이어도 화면 e1은 원래
+입력 e1이다. 입력 배열을 순환 이동해서 다시 입력하면 원래 주름 번호 자체도
+그에 맞춰 바뀐다는 점에 주의한다.
+
+3D에서 각 ei는 O와 ei 라벨이 있는 끝점을 잇는 주름이다. 렌더링 기준 좌표는
+e4를 +X 방향, e1을 XY 평면의 +X에서 alpha4만큼 회전한 방향으로 두고
+나머지 주름을 조립한다. 이는 전체 위치·자세의 기준 선택이며 모드를 정하는
+물리 조건이 아니다. 화면에도 e1–e4를 표시한다.
+
+### 12.3 ff_plus_c0와 ff_minus_c0
+
+ff는 Euclidean flat-foldable 계열의 인수분해 모드다. plus/minus는 사용한
+반각 인수의 이름이다. 구동각의 양수/음수나 M/V 전체 패턴을 뜻하지 않는다.
+
+아래 식은 원래 --drive 4이고
+alpha=(u,v,180-u,180-v)인 경우다. 삼각함수 계산에는 radian을 사용한다.
+
+    x = tan(rho4/2), y = tan(rho1/2)
+    ff_plus:  y = cos((u-v)/2) / cos((u+v)/2) * x
+    ff_minus: y = sin((u-v)/2) / sin((u+v)/2) * x
+
+분모가 0인 특수점에서는 위 나눗셈 표현 대신 동차좌표의 인수를 사용한다.
+구동 주름을 바꾸면 식의 u,v와 rho 번호도 내부 순환 대응에 맞춰 해석한다.
+
+alpha=[70,20,110,160], rho4=45°에서의 실제 결과:
+
+| branch | rho1 | rho2 | rho3 | rho4 |
+| --- | ---: | ---: | ---: | ---: |
+| ff_plus_c0 | 55.927916° | -45° | 55.927916° | 45° |
+| ff_minus_c0 | 27.809617° | 45° | -27.809617° | 45° |
+
+이 예에서는 plus가 rho1=rho3, rho2=-rho4인 경로이고,
+minus가 rho1=-rho3, rho2=rho4인 경로다. plus/minus는 매 샘플에서
+이차공식의 +sqrt/-sqrt 순서를 다시 부여한 값이 아니다.
+
+c0는 최초 주 구동각 대표 구간의 component 번호(0부터 시작)다.
+전체 구동각 대표 구간이 하나면 c0만 있다. 구동 불가능 영역이 있으면 c1 등이
+생길 수 있다. 이들은 전체 기하의 물리적 모드 개수와 동일한 단위가 아니다.
+wrap 후 표시되는 대표 구간이 바뀌어도 선택한 세션의 branch ID는 유지한다.
+
+각각 따로 시작하려면:
+
+    python .\v2\origami_simulator.py --alphas 70 20 110 160 --drive 4 --branch ff_plus_c0 --no-contact
+    python .\v2\origami_simulator.py --alphas 70 20 110 160 --drive 4 --branch ff_minus_c0 --no-contact
+
+### 12.4 E_unique_e1와 E_unique_e2
+
+E는 일반 developable 계열이고, unique_eN은 eN을 unique crease로 해석하는
+branch다. 일반적인 물리적 부분접힘 상태에서 그 주름은 다른 세 주름과 반대
+부호를 갖는다. 이름은 섹터각 부등식과 기준 상태로 정해지며 매번 M/V를 세어
+다시 부여하지 않는다. 구동 주름이 어느 것인지와도 별개다.
+
+alpha=[60,90,135,75]에서는 가능한 unique crease가 e1,e2다.
+rho4=45°에서의 실제 결과:
+
+| branch | rho1 | rho2 | rho3 | rho4 |
+| --- | ---: | ---: | ---: | ---: |
+| E_unique_e1 | -16.885906° | 39.735610° | 18.378483° | 45° |
+| E_unique_e2 | 101.060961° | -39.735610° | 114.203428° | 45° |
+
+주기적으로 연장한 수학적 경로의 대표 각도에서는 부호가 바뀔 수 있지만,
+처음 부여한 ID를 바꾸지 않는다. unique_e1을 “항상 e1이 mountain”이라는
+뜻으로 해석하지 않는다.
+
+    python .\v2\origami_simulator.py --alphas 60 90 135 75 --drive 4 --branch E_unique_e1 --no-contact
+    python .\v2\origami_simulator.py --alphas 60 90 135 75 --drive 4 --branch E_unique_e2 --no-contact
+
+### 12.5 Hyperbolic 실행 예제
+
+    python .\v2\origami_simulator.py --alphas 61 91 136 76 --drive 4 --resolution 1000 --no-contact
+
+합계가 364°이므로 hyperbolic이다. 이 입력은 flat-foldable이나 collinear
+전용형이 아닌 일반형이다. 현재 계산에서 NE_mode1_c0와 NE_mode2_c0가 나온다.
+NE는 non-Euclidean, mode1/2는 기준 구간에서 정한 경로 라벨이다.
+논문의 A/B/C/D 명칭이나 M/V 부호를 직접 뜻하지 않는다.
+
+### 12.6 특수 구조와 고정 구동각 family 실행 예제
+
+    python .\v2\origami_simulator.py --alphas 60 60 120 120 --drive 4 --resolution 1000 --no-contact --branch family_drive_e4_180_free_e1_plus_pi
+
+이 입력은 Euclidean flat-foldable이고 e2와 e4가 collinear인 특수형이다.
+
+- ff_minus_c0에서는 e1,e3가 0인 null fold로 남고 e2,e4가 접힌다.
+- 위 명령은 e4=+180°에 고정된 경계 family를 직접 선택한다.
+- 주 구동 slider는 고정되며, 추가로 나타나는 Free e1 slider를 움직인다.
+- 이름의 free_e1은 이 family에서 e1이 독립 매개변수라는 뜻이다.
+- minus_pi와 plus_pi는 구동각의 -180°와 +180° 대표값을 구별한다.
+
+일반 branch와 family를 함께 비교하려면 위 명령에서
+--branch family_drive_e4_180_free_e1_plus_pi 부분 전체를 제거하고
+창 왼쪽의 branch 목록에서 선택한다. --branch만 남기면 인자 오류가 난다.
+
+### 12.7 Wrap 후 Contact bounds를 켜는 정책
+
+이전 경고 CONTACT_LIMIT: current path cannot enable contact bounds는
+화면의 대표 각도가 아니라 누적 접힘각 이력을 검사했기 때문에 발생했다.
+예를 들어 화면의 -179.427°가 누적 +180.573°인 상태일 수 있다.
+
+이제 UI checkbox로 Contact bounds를 켜면 필요한 경우 현재 형상과 branch를
+유지하면서 각도의 기준을 principal 구간 [-pi,pi]로 새로 잡는다.
+
+- 형상을 다른 위치로 움직이거나 다른 branch를 선택하지 않는다.
+- 누적 구동각과 네 접힘각의 표현을 같은 회전의 대표값으로 설정한다.
+- winding_count는 새 기준에서 0이며, 이전 누적 상태는
+  session.contact_reference_history에 복사하여 보존한다.
+- CONTACT_REFERENCE_RESET 이벤트와 형상 유지·기준 재설정 안내를 표시한다.
+- Contact 그래프는 새 기준의 현재 경로에서 다시 구한다.
+- 이후 ±pi 각도 제한과 실제 구동 불가능 구간은 계속 적용한다.
+
+이는 과거의 무제약 이동을 물리적으로 허용됐다고 판정하는 기능이 아니다.
+현재 상태에서 새 bounded 경로를 시작하는 정책이며, contact 자체도 여전히
+각도 제한이다. 패널 충돌·층 순서의 인증을 의미하지 않는다.
+
+Python API에서는 기존의 엄격한 전환을 유지한다.
+
+    session.set_contact(True)                 # 누적 각도가 범위 밖이면 False
+    session.set_contact(True, reanchor=True)  # 현재 형상에서 새 제한 기준 시작
+
+첫 번째가 실패해도 상태는 바뀌지 않는다. Viewer는 두 번째 정책을 명시적으로
+사용한다. 재설정 시 폐합·회전 동등성을 확인할 수 없으면 전환을 거부한다.
+
+### 12.8 이번 변경의 검증
+
+전체 48개 테스트 통과. 다음 5개 회귀 검증을 추가했다.
+
+- 두 FF branch와 양쪽 wrap 방향에서 기준 재설정 전후 형상·ID 일치
+- 실제 checkbox 콜백, slider 범위·표시·Contact 그래프 동기화와 반복 전환
+- 새 기준에서도 미래의 정의역 이탈 차단
+- non-Grashof의 다른 대표 구간으로 넘어간 뒤 Contact 그래프와 gap 차단
+- 고정 구동각 family의 자유각 기준 재설정과 제한 적용
+
+대표 재현에서 wrap 전후 경로를 유지해 Contact를 켰을 때 정점 좌표의 최대
+변화는 약 2.72e-16이었다. 두 실행 예제도 --no-show를 추가한 headless 환경에서
+1000점 실행과 실제 viewer 구성까지 확인했다. 실제 데스크톱 마우스 드래그
+시험은 수행하지 않았다.

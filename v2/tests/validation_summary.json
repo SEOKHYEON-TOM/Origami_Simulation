@@ -1,8 +1,8 @@
 {
   "python": "3.12.14",
   "tests": {
-    "passed": 43,
-    "seconds": 11.981,
+    "passed": 48,
+    "seconds": 14.337,
     "command": "python -m unittest discover -s v2/tests -v"
   },
   "headless_gui": true,
@@ -249,5 +249,45 @@
     "failure_count": 0,
     "endpoint_false_negative_count": 0,
     "endpoint_false_negatives_before_fix": 67
+  },
+  "contact_reference_validation": {
+    "branch_before": "ff_plus_c0",
+    "branch_after": "ff_plus_c0",
+    "drive_before": 3.151592653589793,
+    "drive_after": -3.1315926535897933,
+    "winding_before": 1,
+    "winding_after": 0,
+    "maximum_vertex_change": 2.723515857283587e-16,
+    "events": [
+      "CONTACT_REFERENCE_RESET"
+    ],
+    "contact": true,
+    "status": "Contact enabled at current shape; angle reference reset.",
+    "strict_api_default_preserved": true,
+    "cli_cases": [
+      {
+        "alphas": [
+          61,
+          91,
+          136,
+          76
+        ],
+        "drive": 4,
+        "resolution": 1000,
+        "headless_viewer": true
+      },
+      {
+        "alphas": [
+          60,
+          60,
+          120,
+          120
+        ],
+        "drive": 4,
+        "resolution": 1000,
+        "branch": "family_drive_e4_180_free_e1_plus_pi",
+        "headless_viewer": true
+      }
+    ]
   }
 }

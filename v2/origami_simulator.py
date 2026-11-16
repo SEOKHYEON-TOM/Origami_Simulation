@@ -713,6 +713,11 @@ class SimulationSession:
         self.free_angle = 0.0
         self.tangent = None
         self.last_error = None
+        self.contact_reference = None
+        self._contact_reference_tangent = None
+        self.contact_reference_history = []
+        self._contact_plot_cache = None
+        self.contact_plot_endpoints = []
         q = self.branch.seed_state.copy()
         if self.is_family:
             self.free_angle = float(q[self.branch.family["free_crease"] - 1])
@@ -792,16 +797,126 @@ class SimulationSession:
         self.state = self._state(q, self.state.drive_unwrapped, ("FAMILY_MOVE",))
         return self.state
 
-    def set_contact(self, enabled):
+    def _copy_state(self):
+        s = self.state
+        return State(
+            s.rhos.copy(),
+            s.drive_unwrapped,
+            s.drive_wrapped,
+            s.winding_count,
+            s.branch_id,
+            s.residual,
+            s.events,
+            s.mv_pattern,
+        )
+
+    def set_contact(self, enabled, *, reanchor=False):
+        """Enable bounds strictly, or explicitly start a new bounded path here.
+
+        Reanchoring changes the angle lift, never the shape or branch. Past
+        unbounded motion is not retrospectively declared contact-admissible.
+        The viewer requests this policy explicitly; the legacy API is strict.
+        """
+        enabled = bool(enabled)
+        if enabled == self.contact:
+            self.last_error = None
+            return True
         if enabled and (
             abs(self.state.drive_unwrapped) > np.pi + 1e-10
             or np.any(abs(self.state.rhos) > np.pi + 1e-8)
         ):
-            self.last_error = "CONTACT_LIMIT: continuous state outside bounds"
-            return False
-        self.contact = bool(enabled)
+            if not reanchor:
+                self.last_error = "CONTACT_LIMIT: continuous state outside bounds"
+                return False
+            old = self._copy_state()
+            q = wrap_angle(old.rhos)
+            at_positive_pi = (old.rhos > 0) & (abs(q + np.pi) < 2e-14)
+            q[at_positive_pi] = np.pi
+            q[self.sim.drive_index] = old.drive_wrapped
+            residual = float(closure_error(self.sim.original_alphas, q))
+            if (
+                not np.isfinite(residual)
+                or residual > max(self.sim._core.residual_tol, 1e-7)
+                or np.linalg.norm(wrap_angle(q - old.rhos)) > 1e-9
+            ):
+                self.last_error = "NUMERICAL_FAILURE: cannot preserve shape while resetting contact reference"
+                return False
+            self.state = self._state(q, old.drive_wrapped, ("CONTACT_REFERENCE_RESET",))
+            self.contact_reference_history.append(old)
+            if self.is_family:
+                self.free_angle = float(q[self.branch.family["free_crease"] - 1])
+        self.contact = enabled
+        if enabled:
+            self.contact_reference = self._copy_state()
+            self._contact_reference_tangent = (
+                None if self.tangent is None else self.tangent.copy()
+            )
+            self._contact_plot_cache = None
         self.last_error = None
         return True
+
+    def plot_data(self):
+        """Display the current bounded path from its actual reference state."""
+        if not self.contact:
+            return [
+                p
+                for b in self.sim.branches.values()
+                if b.mode_id == self.branch.mode_id
+                for p in self.sim.plot_data(b.id, False)
+            ]
+        if self.contact_reference is None:
+            return self.sim.plot_data(self.branch_id, True)
+        if self._contact_plot_cache is not None:
+            return self._contact_plot_cache
+        anchor = self.contact_reference
+        rows = [anchor.rhos.copy()]
+        self.contact_plot_endpoints = []
+        count = max(81, len(self.branch.states))
+        free_index = self.branch.family["free_crease"] - 1 if self.is_family else None
+        origin = anchor.rhos[free_index] if self.is_family else anchor.drive_unwrapped
+        for direction in (-1, 1):
+            q = anchor.rhos.copy()
+            t = float(origin)
+            tangent = self._contact_reference_tangent if not self.is_family else None
+            goals = sorted(
+                (
+                    x
+                    for x in np.linspace(-np.pi, np.pi, count)
+                    if direction * (x - origin) > 1e-12
+                ),
+                reverse=direction < 0,
+            )
+            for goal in goals:
+                try:
+                    if self.is_family:
+                        for sub in np.linspace(
+                            t, goal, max(1, int(np.ceil(abs(goal - t) / 0.035))) + 1
+                        )[1:]:
+                            c = self.branch.family["evaluate"](float(sub))
+                            if c is None:
+                                raise PathError("NUMERICAL_FAILURE", "family plot")
+                            q = lift_angles(c.rhos, q)
+                            q[free_index] = float(sub)
+                            q[self.sim.drive_index] = anchor.drive_unwrapped
+                            if np.any(abs(q) > np.pi + 1e-8):
+                                raise PathError("CONTACT_LIMIT")
+                    else:
+                        q, tangent, _ = self.sim._advance(
+                            q, t, float(goal), tangent, True
+                        )
+                    t = float(goal)
+                    rows.append(q.copy())
+                except PathError as exc:
+                    self.contact_plot_endpoints.append(
+                        Endpoint(t, exc.reason, str(exc))
+                    )
+                    break
+            else:
+                self.contact_plot_endpoints.append(Endpoint(t, "DOMAIN_END"))
+        order = free_index if self.is_family else self.sim.drive_index
+        data = np.array(sorted(rows, key=lambda q: q[order]))
+        self._contact_plot_cache = self.sim._split(data)
+        return self._contact_plot_cache
 
 
 if __name__ == "__main__":
