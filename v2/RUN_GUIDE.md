@@ -773,6 +773,26 @@ Pop-Location
 이는 **입력 45°의 독립 snapshot**이며 sweep 최종 -20°나 전체 시계열 파일이 아니다.
 저장할 상태가 정의되지 않으면 이유를 출력하고 해당 snapshot을 생략한다.
 
+#### 선택 입력각의 backbone 중첩과 좌표축
+
+```powershell
+python .\v2\origami_forward_kinematics.py --demo backbone --periods 5 --angles 15 45 90 135 170
+```
+
+Fig. 3F의 네 정점을 5번 반복한 20유닛 예제다. 두 창에 전체 backbone 중첩과 말단 중심 궤적을 표시한다.
+색이 다른 실선은 각 입력각의 backbone, 회색 점선은 같은 유닛 중심의 표본 간 이동이다.
+RGB 화살표와 X/Y/Z 라벨은 선택 표본의 입력·출력 주름 좌표계다.
+화살표 끝도 축 범위에 포함하며 표시 개수와 길이는 Python API로 조절할 수 있다.
+단위 길이는 실행용 선택이며 논문의 유한 패널 외형이나 전역 비관통 보장이 아니다.
+
+새 `sample_backbone_motion`의 기본 기준은 **첫 유효 표본의 입력 프레임을 고정한 initial**이다.
+기존 `run_trajectory_sweep`는 각 상태의 입력 프레임을 쓰는 current 기준을 유지한다.
+기본 비교 데모에도 말단 좌표축과 별도 backbone 창을 추가했다.
+축 X는 중심 정점에서 주름 끝점 방향이며 끝점에서 중심을 향하는 방향으로 바꾸지 않았다.
+말단 위치는 마지막 유닛 중심이고 backbone의 마지막 추가 점은 출력 주름 끝점이다.
+
+사용 예제, 좌표계 정의와 실패 처리의 상세 내용은 [FK_MOTION_GUIDE.md](FK_MOTION_GUIDE.md)를 참고한다.
+
 ### 9.8 MAT 저장과 downstream 호환성
 
 `export_to_mat(path, rho0_deg=45)`는 독립 snapshot을 조회하며 accepted pose를 변경하지 않는다.
@@ -826,8 +846,8 @@ python -m unittest discover -s .\v2\tests -v
 ```
 
 현재 기준 코드에는 회전 폐합, 대칭·재번호화, branch·wrap, 주름 클릭,
-Contact·관통·고립 경계 등을 검사하는 117개 테스트가 있다.
-`Ran 117 tests ... OK`가 기준 실행 결과다. 향후 테스트가 추가되면 개수는 늘 수 있다.
+Contact·관통·고립 경계·FK 좌표계·backbone 중첩 등을 검사하는 127개 테스트가 있다.
+`Ran 127 tests ... OK`가 기준 실행 결과다. 향후 테스트가 추가되면 개수는 늘 수 있다.
 이는 모든 기하·충돌 상황의 수학적 전체성을 증명하는 결과가 아니다.
 
 <a id="troubleshooting"></a>

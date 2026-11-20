@@ -1,8 +1,8 @@
 {
   "python": "3.12.14",
   "tests": {
-    "passed": 117,
-    "seconds": 72.312,
+    "passed": 127,
+    "seconds": 78.806,
     "command": "python -m unittest discover -s v2/tests -v"
   },
   "headless_gui": true,
@@ -1075,6 +1075,64 @@
       "simulator_commands": 17,
       "python_examples": 8,
       "headless": true
+    }
+  },
+  "fk_motion_validation": {
+    "baseline_commit": "18b5e243ba3c8973ed037f123fad0be1dbf1e584",
+    "full_suite": {
+      "passed": 127,
+      "seconds": 78.806
+    },
+    "final_fk_suite": {
+      "passed": 22,
+      "seconds": 10.92
+    },
+    "new_motion_tests": 10,
+    "legacy_fk_comparison": {
+      "models": 18,
+      "valid": 14,
+      "max_position_error": 0.0,
+      "max_rotation_error": 0.0
+    },
+    "headless_demos": {
+      "backbone": {
+        "units": 20,
+        "angles_deg": [
+          15,
+          45,
+          90,
+          135,
+          170
+        ],
+        "figures": 2
+      },
+      "comparison": {
+        "cases": 6,
+        "frames_per_case": 100,
+        "figures": 2,
+        "valid_frames": [
+          100,
+          100,
+          99,
+          100,
+          100,
+          100
+        ]
+      }
+    },
+    "reference_modes": [
+      "initial",
+      "current",
+      "world"
+    ],
+    "coordinate_axes": "X=center-to-crease-tip; Z=oriented panel-normal bisector; Y=Z cross X",
+    "headless_rendered": true,
+    "images_visually_inspected": true,
+    "desktop_mouse_tested": false,
+    "global_strip_collision_checked": false,
+    "source_sha256": {
+      "v2/origami_forward_kinematics.py": "2a24e7617a3bb29ca130065635183e7aaf926ce516c2a4ab2cc4636d01302dd3",
+      "v2/tests/test_fk_motion_plot.py": "9283d03612d4091fdc1647bc36720e4fe719a62e09f48c853b77b3683c816cd5"
     }
   }
 }
